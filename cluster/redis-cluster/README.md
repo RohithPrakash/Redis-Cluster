@@ -70,8 +70,8 @@ The default replica count is **6** (`redisCluster.replicas`), which gives:
 ### Headless Service
 
 A headless Service (`clusterIP: None`) exposes:
-- Port `6379` — Redis client port
-- Port `16379` — Redis cluster bus port (used for gossip and failovers)
+- Port `6379` - Redis client port
+- Port `16379` - Redis cluster bus port (used for gossip and failovers)
 
 Because it is headless, every pod gets a resolvable DNS record such as:
 ```
@@ -81,8 +81,8 @@ redis-cluster-0.redis-cluster.default.svc.cluster.local
 ### Pod Anti-Affinity
 
 By default, the chart includes **PodAntiAffinity** rules:
-- **Required** — Spread pods across different nodes (`kubernetes.io/hostname`)
-- **Preferred** — Spread pods across different zones (`topology.kubernetes.io/zone`)
+- **Required** - Spread pods across different nodes (`kubernetes.io/hostname`)
+- **Preferred** - Spread pods across different zones (`topology.kubernetes.io/zone`)
 
 For single-node test clusters (e.g., `kind`), disable the default anti-affinity:
 
@@ -133,13 +133,13 @@ The StatefulSet includes an **initContainer** named `cluster-bootstrap` that run
 
 ### What it does
 
-1. **Idempotency check** — Starts a temporary Redis instance and checks whether `cluster_state` is already `ok` or whether it already knows multiple cluster nodes. If so, it exits immediately.
-2. **Waits for peers** — Pings every pod (`redis-cluster-0` through `redis-cluster-n`) until all respond.
+1. **Idempotency check** - Starts a temporary Redis instance and checks whether `cluster_state` is already `ok` or whether it already knows multiple cluster nodes. If so, it exits immediately.
+2. **Waits for peers** - Pings every pod (`redis-cluster-0` through `redis-cluster-n`) until all respond.
 3. **Forms the cluster** using manual Redis cluster commands:
-   - `CLUSTER MEET` — Introduces each peer to the seed node
-   - `CLUSTER ADDSLOTS` — Assigns hash slots to the three master nodes
-   - `CLUSTER REPLICATE` — Attaches replicas to their respective masters
-4. **Cleans up** — Shuts down the temporary Redis instance and allows the main container to start.
+   - `CLUSTER MEET` - Introduces each peer to the seed node
+   - `CLUSTER ADDSLOTS` - Assigns hash slots to the three master nodes
+   - `CLUSTER REPLICATE` - Attaches replicas to their respective masters
+4. **Cleans up** - Shuts down the temporary Redis instance and allows the main container to start.
 
 ### Why not `redis-cli --cluster create`?
 
@@ -213,8 +213,8 @@ These IDs match the `redis` user created inside the container image.
 
 ## Probes
 
-- **LivenessProbe** — `redis-cli ping` (restarts the container if Redis is unresponsive)
-- **ReadinessProbe** — Checks `cluster_state:ok` via `redis-cli cluster info` (removes the pod from Service endpoints until it has fully joined the cluster)
+- **LivenessProbe** - `redis-cli ping` (restarts the container if Redis is unresponsive)
+- **ReadinessProbe** - Checks `cluster_state:ok` via `redis-cli cluster info` (removes the pod from Service endpoints until it has fully joined the cluster)
 
 ---
 

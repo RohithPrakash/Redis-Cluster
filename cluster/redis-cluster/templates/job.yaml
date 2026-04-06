@@ -27,72 +27,15 @@ spec:
         - name: bootstrap
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command:
-            - /bin/sh
-            - -c
-            - |
-              set -e
-              REPLICAS={{ .Values.redisCluster.replicas }}
-              SERVICE={{ include "redis-cluster.fullname" . }}
-              NAMESPACE={{ .Release.Namespace }}
-
-              if [ "$((REPLICAS % 2))" -ne 0 ]; then
-                echo "ERROR: redisCluster.replicas must be an even number (n/2 masters, n/2 replicas)."
-                exit 1
-              fi
-              NUM_MASTERS=$((REPLICAS / 2))
-
-              for i in $(seq 0 $((REPLICAS - 1))); do
-                HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.cluster.local"
-                echo "Waiting for $HOST to respond to PING..."
-                until redis-cli -h "$HOST" -p 6379 ping | grep -q PONG; do
-                  sleep 2
-                done
-              done
-
-              if redis-cli -h "${SERVICE}-0.${SERVICE}.${NAMESPACE}.svc.cluster.local" -p 6379 cluster info 2>/dev/null | grep -q "cluster_state:ok"; then
-                echo "Cluster already initialized."
-                exit 0
-              fi
-
-              echo "Joining nodes to the cluster..."
-              for i in $(seq 1 $((REPLICAS - 1))); do
-                HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.cluster.local"
-                IP=$(getent hosts "$HOST" | awk '{print $1}')
-                redis-cli -h "${SERVICE}-0.${SERVICE}.${NAMESPACE}.svc.cluster.local" -p 6379 CLUSTER MEET "$IP" 6379
-              done
-
-              echo "Waiting for all nodes to be known..."
-              until [ "$(redis-cli -h "${SERVICE}-0.${SERVICE}.${NAMESPACE}.svc.cluster.local" -p 6379 cluster info | awk -F: '/cluster_known_nodes:/{print $2}' | tr -d '[:space:]')" = "$REPLICAS" ]; do
-                sleep 2
-              done
-
-              echo "Assigning hash slots across $NUM_MASTERS masters..."
-              TOTAL_SLOTS=16384
-              for i in $(seq 0 $((NUM_MASTERS - 1))); do
-                START=$((i * TOTAL_SLOTS / NUM_MASTERS))
-                END=$(((i + 1) * TOTAL_SLOTS / NUM_MASTERS - 1))
-                MASTER_HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.cluster.local"
-                echo "Master $i: slots $START-$END"
-                redis-cli -h "$MASTER_HOST" -p 6379 CLUSTER ADDSLOTS $(seq "$START" "$END")
-              done
-
-              echo "Waiting for slot assignment to propagate..."
-              until [ "$(redis-cli -h "${SERVICE}-0.${SERVICE}.${NAMESPACE}.svc.cluster.local" -p 6379 cluster info | awk -F: '/cluster_slots_assigned:/{print $2}' | tr -d '[:space:]')" = "16384" ]; do
-                sleep 2
-              done
-
-              echo "Configuring replicas..."
-              for i in $(seq 0 $((NUM_MASTERS - 1))); do
-                REPLICA_INDEX=$((NUM_MASTERS + i))
-                MASTER_HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.cluster.local"
-                REPLICA_HOST="${SERVICE}-${REPLICA_INDEX}.${SERVICE}.${NAMESPACE}.svc.cluster.local"
-                MASTER_ID=$(redis-cli -h "$MASTER_HOST" -p 6379 CLUSTER MYID)
-                echo "Replica $REPLICA_INDEX -> Master $i ($MASTER_ID)"
-                redis-cli -h "$REPLICA_HOST" -p 6379 CLUSTER REPLICATE "$MASTER_ID"
-              done
-
-              echo "Redis Cluster created successfully via Job."
+          command: ["/bin/sh", "/scripts/job-bootstrap.sh"]
+          volumeMounts:
+            - name: redis-scripts
+              mountPath: /scripts
+              readOnly: true
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+      volumes:
+        - name: redis-scripts
+          configMap:
+            name: {{ include "redis-cluster.fullname" . }}-scripts
 {{- end }}
