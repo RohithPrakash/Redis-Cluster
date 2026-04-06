@@ -73,6 +73,10 @@ kind load docker-image redis-cluster:7.2
 # 2. Install the Helm chart
 helm install redis-cluster cluster/redis-cluster/
 
+# If the Kubernetes cluster has a single node
+
+helm install redis-cluster cluster/redis-cluster/ --set-json affinity='{}'
+
 # 3. Verify cluster health
 kubectl exec -it redis-cluster-0 -- redis-cli cluster info
 kubectl exec -it redis-cluster-0 -- redis-cli cluster nodes

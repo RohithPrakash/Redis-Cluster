@@ -25,6 +25,10 @@ kind load docker-image redis-cluster:7.2
 
 ```bash
 helm install redis-cluster cluster/redis-cluster/
+
+# If the Kubernetes cluster has a single node
+
+helm install redis-cluster cluster/redis-cluster/ --set-json affinity='{}'
 ```
 
 ### 3. Verify the cluster
