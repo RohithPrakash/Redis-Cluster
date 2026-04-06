@@ -80,6 +80,12 @@ spec:
                 done
               done
 
+              if [ "$((REPLICAS % 2))" -ne 0 ]; then
+                echo "ERROR: redisCluster.replicas must be an even number (n/2 masters, n/2 replicas)."
+                exit 1
+              fi
+              NUM_MASTERS=$((REPLICAS / 2))
+
               echo "Joining nodes to the cluster..."
               for i in $(seq 1 $((REPLICAS - 1))); do
                 HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.cluster.local"
@@ -92,10 +98,15 @@ spec:
                 sleep 2
               done
 
-              echo "Assigning hash slots..."
-              redis-cli -h 127.0.0.1 -p 6379 CLUSTER ADDSLOTS $(seq 0 5460)
-              redis-cli -h "${SERVICE}-1.${SERVICE}.${NAMESPACE}.svc.cluster.local" -p 6379 CLUSTER ADDSLOTS $(seq 5461 10922)
-              redis-cli -h "${SERVICE}-2.${SERVICE}.${NAMESPACE}.svc.cluster.local" -p 6379 CLUSTER ADDSLOTS $(seq 10923 16383)
+              echo "Assigning hash slots across $NUM_MASTERS masters..."
+              TOTAL_SLOTS=16384
+              for i in $(seq 0 $((NUM_MASTERS - 1))); do
+                START=$((i * TOTAL_SLOTS / NUM_MASTERS))
+                END=$(((i + 1) * TOTAL_SLOTS / NUM_MASTERS - 1))
+                MASTER_HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.cluster.local"
+                echo "Master $i: slots $START-$END"
+                redis-cli -h "$MASTER_HOST" -p 6379 CLUSTER ADDSLOTS $(seq "$START" "$END")
+              done
 
               echo "Waiting for slot assignment to propagate..."
               until [ "$(redis-cli -h 127.0.0.1 -p 6379 cluster info | awk -F: '/cluster_slots_assigned:/{print $2}' | tr -d '[:space:]')" = "16384" ]; do
@@ -103,13 +114,14 @@ spec:
               done
 
               echo "Configuring replicas..."
-              MASTER_0=$(redis-cli -h 127.0.0.1 -p 6379 CLUSTER MYID)
-              MASTER_1=$(redis-cli -h "${SERVICE}-1.${SERVICE}.${NAMESPACE}.svc.cluster.local" -p 6379 CLUSTER MYID)
-              MASTER_2=$(redis-cli -h "${SERVICE}-2.${SERVICE}.${NAMESPACE}.svc.cluster.local" -p 6379 CLUSTER MYID)
-
-              redis-cli -h "${SERVICE}-3.${SERVICE}.${NAMESPACE}.svc.cluster.local" -p 6379 CLUSTER REPLICATE "$MASTER_2"
-              redis-cli -h "${SERVICE}-4.${SERVICE}.${NAMESPACE}.svc.cluster.local" -p 6379 CLUSTER REPLICATE "$MASTER_0"
-              redis-cli -h "${SERVICE}-5.${SERVICE}.${NAMESPACE}.svc.cluster.local" -p 6379 CLUSTER REPLICATE "$MASTER_1"
+              for i in $(seq 0 $((NUM_MASTERS - 1))); do
+                REPLICA_INDEX=$((NUM_MASTERS + i))
+                MASTER_HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.cluster.local"
+                REPLICA_HOST="${SERVICE}-${REPLICA_INDEX}.${SERVICE}.${NAMESPACE}.svc.cluster.local"
+                MASTER_ID=$(redis-cli -h "$MASTER_HOST" -p 6379 CLUSTER MYID)
+                echo "Replica $REPLICA_INDEX -> Master $i ($MASTER_ID)"
+                redis-cli -h "$REPLICA_HOST" -p 6379 CLUSTER REPLICATE "$MASTER_ID"
+              done
 
               echo "Redis Cluster created successfully."
           volumeMounts:
