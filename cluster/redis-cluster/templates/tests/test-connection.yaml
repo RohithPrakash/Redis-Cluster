@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "redis-cluster.fullname" . }}-test-connection"
+  labels:
+    {{- include "redis-cluster.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: redis-cli
+      image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      command: ['redis-cli']
+      args: ['-h', '{{ include "redis-cluster.fullname" . }}-0.{{ include "redis-cluster.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local', '-p', '6379', 'ping']
+  restartPolicy: Never

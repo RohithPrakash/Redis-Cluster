@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "redis-cluster.fullname" . }}
+  labels:
+    {{- include "redis-cluster.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - port: 6379
+      targetPort: redis-client
+      protocol: TCP
+      name: redis-client
+    - port: 16379
+      targetPort: cluster-bus
+      protocol: TCP
+      name: cluster-bus
+  selector:
+    {{- include "redis-cluster.selectorLabels" . | nindent 4 }}

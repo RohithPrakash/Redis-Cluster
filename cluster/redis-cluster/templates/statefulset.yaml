@@ -1,0 +1,234 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "redis-cluster.fullname" . }}
+  labels:
+    {{- include "redis-cluster.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "redis-cluster.fullname" . }}
+  replicas: {{ .Values.redisCluster.replicas }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      {{- include "redis-cluster.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "redis-cluster.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "redis-cluster.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if not .Values.bootstrapJob.enabled }}
+      initContainers:
+        - name: cluster-bootstrap
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              POD_NAME=$(hostname)
+              if [ "$POD_NAME" != "{{ include "redis-cluster.fullname" . }}-0" ]; then
+                exit 0
+              fi
+
+              cp /etc/redis/redis.conf /data/redis.conf
+              redis-server /data/redis.conf &
+              REDIS_PID=$!
+
+              cleanup() {
+                kill $REDIS_PID 2>/dev/null || true
+                wait $REDIS_PID 2>/dev/null || true
+              }
+              trap cleanup EXIT
+
+              sleep 2
+
+              if redis-cli -h 127.0.0.1 -p 6379 cluster info 2>/dev/null | grep -q "cluster_state:ok"; then
+                echo "Cluster already initialized."
+                exit 0
+              fi
+
+              KNOWN_NODES=$(redis-cli -h 127.0.0.1 -p 6379 cluster info 2>/dev/null | awk -F: '/cluster_known_nodes:/{print $2}' | tr -d '[:space:]')
+              if [ -n "$KNOWN_NODES" ] && [ "$KNOWN_NODES" -gt 1 ] 2>/dev/null; then
+                echo "Node already knows $KNOWN_NODES cluster nodes. Skipping creation."
+                exit 0
+              fi
+
+              REPLICAS={{ .Values.redisCluster.replicas }}
+              SERVICE={{ include "redis-cluster.fullname" . }}
+              NAMESPACE={{ .Release.Namespace }}
+
+              for i in $(seq 0 $((REPLICAS - 1))); do
+                HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.cluster.local"
+                echo "Waiting for $HOST to respond to PING..."
+                until redis-cli -h "$HOST" -p 6379 ping | grep -q PONG; do
+                  sleep 2
+                done
+              done
+
+              echo "Joining nodes to the cluster..."
+              for i in $(seq 1 $((REPLICAS - 1))); do
+                HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.cluster.local"
+                IP=$(getent hosts "$HOST" | awk '{print $1}')
+                redis-cli -h 127.0.0.1 -p 6379 CLUSTER MEET "$IP" 6379
+              done
+
+              echo "Waiting for all nodes to be known..."
+              until [ "$(redis-cli -h 127.0.0.1 -p 6379 cluster info | awk -F: '/cluster_known_nodes:/{print $2}' | tr -d '[:space:]')" = "$REPLICAS" ]; do
+                sleep 2
+              done
+
+              echo "Assigning hash slots..."
+              redis-cli -h 127.0.0.1 -p 6379 CLUSTER ADDSLOTS $(seq 0 5460)
+              redis-cli -h "${SERVICE}-1.${SERVICE}.${NAMESPACE}.svc.cluster.local" -p 6379 CLUSTER ADDSLOTS $(seq 5461 10922)
+              redis-cli -h "${SERVICE}-2.${SERVICE}.${NAMESPACE}.svc.cluster.local" -p 6379 CLUSTER ADDSLOTS $(seq 10923 16383)
+
+              echo "Waiting for slot assignment to propagate..."
+              until [ "$(redis-cli -h 127.0.0.1 -p 6379 cluster info | awk -F: '/cluster_slots_assigned:/{print $2}' | tr -d '[:space:]')" = "16384" ]; do
+                sleep 2
+              done
+
+              echo "Configuring replicas..."
+              MASTER_0=$(redis-cli -h 127.0.0.1 -p 6379 CLUSTER MYID)
+              MASTER_1=$(redis-cli -h "${SERVICE}-1.${SERVICE}.${NAMESPACE}.svc.cluster.local" -p 6379 CLUSTER MYID)
+              MASTER_2=$(redis-cli -h "${SERVICE}-2.${SERVICE}.${NAMESPACE}.svc.cluster.local" -p 6379 CLUSTER MYID)
+
+              redis-cli -h "${SERVICE}-3.${SERVICE}.${NAMESPACE}.svc.cluster.local" -p 6379 CLUSTER REPLICATE "$MASTER_2"
+              redis-cli -h "${SERVICE}-4.${SERVICE}.${NAMESPACE}.svc.cluster.local" -p 6379 CLUSTER REPLICATE "$MASTER_0"
+              redis-cli -h "${SERVICE}-5.${SERVICE}.${NAMESPACE}.svc.cluster.local" -p 6379 CLUSTER REPLICATE "$MASTER_1"
+
+              echo "Redis Cluster created successfully."
+          volumeMounts:
+            - name: redis-config
+              mountPath: /etc/redis
+              readOnly: true
+            - name: data
+              mountPath: /data
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+      {{- end }}
+      containers:
+        - name: redis
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              cp /etc/redis/redis.conf /data/redis.conf
+              echo "cluster-announce-ip $(hostname).{{ include "redis-cluster.fullname" . }}" >> /data/redis.conf
+              echo "cluster-announce-hostname $(hostname).{{ include "redis-cluster.fullname" . }}" >> /data/redis.conf
+              exec redis-server /data/redis.conf
+          ports:
+            - name: redis-client
+              containerPort: 6379
+              protocol: TCP
+            - name: cluster-bus
+              containerPort: 16379
+              protocol: TCP
+          livenessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 5
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  redis-cli -h 127.0.0.1 -p 6379 cluster info | grep -q "cluster_state:ok"
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: redis-config
+              mountPath: /etc/redis
+              readOnly: true
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      affinity:
+        {{- if kindIs "map" .Values.affinity }}
+        {{- toYaml .Values.affinity | nindent 8 }}
+        {{- else }}
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app.kubernetes.io/name
+                    operator: In
+                    values:
+                      - {{ include "redis-cluster.name" . }}
+                  - key: app.kubernetes.io/instance
+                    operator: In
+                    values:
+                      - {{ .Release.Name }}
+              topologyKey: kubernetes.io/hostname
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values:
+                        - {{ include "redis-cluster.name" . }}
+                    - key: app.kubernetes.io/instance
+                      operator: In
+                      values:
+                        - {{ .Release.Name }}
+                topologyKey: topology.kubernetes.io/zone
+        {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: redis-config
+          configMap:
+            name: {{ include "redis-cluster.fullname" . }}-config
+        {{- if not .Values.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
+  {{- if .Values.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "redis-cluster.labels" . | nindent 10 }}
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: {{ .Values.persistence.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}
+  {{- end }}
