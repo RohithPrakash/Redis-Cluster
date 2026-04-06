@@ -27,7 +27,10 @@ spec:
         - name: bootstrap
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["/bin/sh", "/scripts/job-bootstrap.sh"]
+          command: ["/bin/sh", "/scripts/bootstrap.sh"]
+          env:
+            - name: BOOTSTRAP_ROLE
+              value: "job"
           volumeMounts:
             - name: redis-scripts
               mountPath: /scripts

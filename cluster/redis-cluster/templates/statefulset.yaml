@@ -35,7 +35,10 @@ spec:
         - name: cluster-bootstrap
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["/bin/sh", "/scripts/init-bootstrap.sh"]
+          command: ["/bin/sh", "/scripts/bootstrap.sh"]
+          env:
+            - name: BOOTSTRAP_ROLE
+              value: "init"
           volumeMounts:
             - name: redis-config
               mountPath: /etc/redis
