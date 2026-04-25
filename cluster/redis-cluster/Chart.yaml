@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 apiVersion: v2
 name: redis-cluster
 description: A Helm chart for deploying a production-ready Redis Cluster on Kubernetes

@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Redis Cluster on Kubernetes
 
 This repository contains a **production-ready container image** and **Helm chart** for deploying a Redis Cluster on Kubernetes.

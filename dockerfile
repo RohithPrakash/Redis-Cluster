@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 FROM almalinux:9
 
 # Install Redis 7.2 from AlmaLinux AppStream and ensure redis user has UID/GID 999

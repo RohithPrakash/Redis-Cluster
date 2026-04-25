@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Redis Cluster Helm Chart
 
 A production-ready Helm chart for deploying an **n-node Redis Cluster** on Kubernetes. The chart defaults to **6 nodes** (3 masters + 3 replicas) and uses a **StatefulSet** with stable network identities and persistent storage.

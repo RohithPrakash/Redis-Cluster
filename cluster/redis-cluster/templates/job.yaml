@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 {{- if .Values.bootstrapJob.enabled }}
 apiVersion: batch/v1
 kind: Job
