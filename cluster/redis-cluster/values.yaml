@@ -15,6 +15,10 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
+# Kubernetes cluster domain suffix. The default is "cluster" which produces
+# .svc.cluster.local DNS names. Change this if your cluster uses a custom domain.
+clusterDomain: cluster
+
 serviceAccount:
   # Specifies whether a service account should be created.
   create: true
@@ -88,7 +92,7 @@ tls:
   # - "no"        : client certificates are not required
   # - "optional"  : client certificates are optional; if presented, they are validated
   # - "yes"       : client certificates are mandatory for all TLS connections
-  authClients: no
+  authClients: "no"
   # Auto-generate certificates using cert-manager.
   certManager:
     enabled: false

@@ -12,6 +12,7 @@ data:
     REPLICAS={{ .Values.redisCluster.replicas }}
     SERVICE={{ include "redis-cluster.fullname" . }}
     NAMESPACE={{ .Release.Namespace }}
+    CLUSTER_DOMAIN={{ .Values.clusterDomain }}
 {{- if .Values.tls.enabled }}
     REDISCLI="redis-cli --tls --cacert /etc/redis/tls/{{ .Values.tls.caFilename }}{{ if ne .Values.tls.authClients "no" }} --cert /etc/redis/tls/{{ .Values.tls.certFilename }} --key /etc/redis/tls/{{ .Values.tls.keyFilename }}{{ end }}"
 {{- else }}
@@ -57,7 +58,7 @@ data:
       fi
     else
       MODE="job"
-      TARGET_HOST="${SERVICE}-0.${SERVICE}.${NAMESPACE}.svc.cluster.local"
+      TARGET_HOST="${SERVICE}-0.${SERVICE}.${NAMESPACE}.svc.${CLUSTER_DOMAIN}.local"
 
       if $REDISCLI -h "$TARGET_HOST" -p 6379 cluster info 2>/dev/null | grep -q "cluster_state:ok"; then
         echo "Cluster already initialized."
@@ -66,7 +67,7 @@ data:
     fi
 
     for i in $(seq 0 $((REPLICAS - 1))); do
-      HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.cluster.local"
+      HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.${CLUSTER_DOMAIN}.local"
       echo "Waiting for $HOST to respond to PING..."
       until $REDISCLI -h "$HOST" -p 6379 ping | grep -q PONG; do
         sleep 2
@@ -75,7 +76,7 @@ data:
 
     echo "Joining nodes to the cluster..."
     for i in $(seq 1 $((REPLICAS - 1))); do
-      HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.cluster.local"
+      HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.${CLUSTER_DOMAIN}.local"
       IP=$(getent hosts "$HOST" | awk '{print $1}')
       $REDISCLI -h "$TARGET_HOST" -p 6379 CLUSTER MEET "$IP" 6379
     done
@@ -90,7 +91,7 @@ data:
     for i in $(seq 0 $((NUM_MASTERS - 1))); do
       START=$((i * TOTAL_SLOTS / NUM_MASTERS))
       END=$(((i + 1) * TOTAL_SLOTS / NUM_MASTERS - 1))
-      MASTER_HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.cluster.local"
+      MASTER_HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.${CLUSTER_DOMAIN}.local"
       echo "Master $i: slots $START-$END"
       $REDISCLI -h "$MASTER_HOST" -p 6379 CLUSTER ADDSLOTS $(seq "$START" "$END")
     done
@@ -103,8 +104,8 @@ data:
     echo "Configuring replicas..."
     for i in $(seq 0 $((NUM_MASTERS - 1))); do
       REPLICA_INDEX=$((NUM_MASTERS + i))
-      MASTER_HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.cluster.local"
-      REPLICA_HOST="${SERVICE}-${REPLICA_INDEX}.${SERVICE}.${NAMESPACE}.svc.cluster.local"
+      MASTER_HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.${CLUSTER_DOMAIN}.local"
+      REPLICA_HOST="${SERVICE}-${REPLICA_INDEX}.${SERVICE}.${NAMESPACE}.svc.${CLUSTER_DOMAIN}.local"
       MASTER_ID=$($REDISCLI -h "$MASTER_HOST" -p 6379 CLUSTER MYID)
       echo "Replica $REPLICA_INDEX -> Master $i ($MASTER_ID)"
       $REDISCLI -h "$REPLICA_HOST" -p 6379 CLUSTER REPLICATE "$MASTER_ID"

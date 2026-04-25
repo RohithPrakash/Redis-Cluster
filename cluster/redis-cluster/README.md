@@ -189,6 +189,7 @@ The Job runs a single pod that:
 | `networkPolicy.enabled` | `true` | Enable NetworkPolicy |
 | `bootstrapJob.enabled` | `false` | Use Job instead of initContainer |
 | `tls.authClients` | `no` | Client certificate auth: `no`, `optional`, or `yes` |
+| `clusterDomain` | `cluster` | Kubernetes cluster domain suffix (`svc.<domain>.local`) |
 | `resources` | `{}` | CPU/memory limits and requests |
 | `affinity` | *(built-in defaults)* | Pod anti-affinity rules |
 
@@ -259,8 +260,8 @@ helm install redis-cluster cluster/redis-cluster/ \
 ```
 
 The generated certificate will include SANs for:
-- `*.redis-cluster.default.svc.cluster.local`
-- `redis-cluster.default.svc.cluster.local`
+- `*.redis-cluster.default.svc.<clusterDomain>.local`
+- `redis-cluster.default.svc.<clusterDomain>.local`
 
 ### Full TLS (cluster bus)
 
