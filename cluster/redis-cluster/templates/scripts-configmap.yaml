@@ -12,6 +12,11 @@ data:
     REPLICAS={{ .Values.redisCluster.replicas }}
     SERVICE={{ include "redis-cluster.fullname" . }}
     NAMESPACE={{ .Release.Namespace }}
+{{- if .Values.tls.enabled }}
+    REDISCLI="redis-cli --tls --cacert /etc/redis/tls/{{ .Values.tls.caFilename }}"
+{{- else }}
+    REDISCLI="redis-cli"
+{{- end }}
 
     if [ "$((REPLICAS % 2))" -ne 0 ]; then
       echo "ERROR: redisCluster.replicas must be an even number (n/2 masters, n/2 replicas)."
@@ -40,12 +45,12 @@ data:
 
       sleep 2
 
-      if redis-cli -h "$TARGET_HOST" -p 6379 cluster info 2>/dev/null | grep -q "cluster_state:ok"; then
+      if $REDISCLI -h "$TARGET_HOST" -p 6379 cluster info 2>/dev/null | grep -q "cluster_state:ok"; then
         echo "Cluster already initialized."
         exit 0
       fi
 
-      KNOWN_NODES=$(redis-cli -h "$TARGET_HOST" -p 6379 cluster info 2>/dev/null | awk -F: '/cluster_known_nodes:/{print $2}' | tr -d '[:space:]')
+      KNOWN_NODES=$($REDISCLI -h "$TARGET_HOST" -p 6379 cluster info 2>/dev/null | awk -F: '/cluster_known_nodes:/{print $2}' | tr -d '[:space:]')
       if [ -n "$KNOWN_NODES" ] && [ "$KNOWN_NODES" -gt 1 ] 2>/dev/null; then
         echo "Node already knows $KNOWN_NODES cluster nodes. Skipping creation."
         exit 0
@@ -54,7 +59,7 @@ data:
       MODE="job"
       TARGET_HOST="${SERVICE}-0.${SERVICE}.${NAMESPACE}.svc.cluster.local"
 
-      if redis-cli -h "$TARGET_HOST" -p 6379 cluster info 2>/dev/null | grep -q "cluster_state:ok"; then
+      if $REDISCLI -h "$TARGET_HOST" -p 6379 cluster info 2>/dev/null | grep -q "cluster_state:ok"; then
         echo "Cluster already initialized."
         exit 0
       fi
@@ -63,7 +68,7 @@ data:
     for i in $(seq 0 $((REPLICAS - 1))); do
       HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.cluster.local"
       echo "Waiting for $HOST to respond to PING..."
-      until redis-cli -h "$HOST" -p 6379 ping | grep -q PONG; do
+      until $REDISCLI -h "$HOST" -p 6379 ping | grep -q PONG; do
         sleep 2
       done
     done
@@ -72,11 +77,11 @@ data:
     for i in $(seq 1 $((REPLICAS - 1))); do
       HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.cluster.local"
       IP=$(getent hosts "$HOST" | awk '{print $1}')
-      redis-cli -h "$TARGET_HOST" -p 6379 CLUSTER MEET "$IP" 6379
+      $REDISCLI -h "$TARGET_HOST" -p 6379 CLUSTER MEET "$IP" 6379
     done
 
     echo "Waiting for all nodes to be known..."
-    until [ "$(redis-cli -h "$TARGET_HOST" -p 6379 cluster info | awk -F: '/cluster_known_nodes:/{print $2}' | tr -d '[:space:]')" = "$REPLICAS" ]; do
+    until [ "$($REDISCLI -h "$TARGET_HOST" -p 6379 cluster info | awk -F: '/cluster_known_nodes:/{print $2}' | tr -d '[:space:]')" = "$REPLICAS" ]; do
       sleep 2
     done
 
@@ -87,11 +92,11 @@ data:
       END=$(((i + 1) * TOTAL_SLOTS / NUM_MASTERS - 1))
       MASTER_HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.cluster.local"
       echo "Master $i: slots $START-$END"
-      redis-cli -h "$MASTER_HOST" -p 6379 CLUSTER ADDSLOTS $(seq "$START" "$END")
+      $REDISCLI -h "$MASTER_HOST" -p 6379 CLUSTER ADDSLOTS $(seq "$START" "$END")
     done
 
     echo "Waiting for slot assignment to propagate..."
-    until [ "$(redis-cli -h "$TARGET_HOST" -p 6379 cluster info | awk -F: '/cluster_slots_assigned:/{print $2}' | tr -d '[:space:]')" = "16384" ]; do
+    until [ "$($REDISCLI -h "$TARGET_HOST" -p 6379 cluster info | awk -F: '/cluster_slots_assigned:/{print $2}' | tr -d '[:space:]')" = "16384" ]; do
       sleep 2
     done
 
@@ -100,9 +105,9 @@ data:
       REPLICA_INDEX=$((NUM_MASTERS + i))
       MASTER_HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.cluster.local"
       REPLICA_HOST="${SERVICE}-${REPLICA_INDEX}.${SERVICE}.${NAMESPACE}.svc.cluster.local"
-      MASTER_ID=$(redis-cli -h "$MASTER_HOST" -p 6379 CLUSTER MYID)
+      MASTER_ID=$($REDISCLI -h "$MASTER_HOST" -p 6379 CLUSTER MYID)
       echo "Replica $REPLICA_INDEX -> Master $i ($MASTER_ID)"
-      redis-cli -h "$REPLICA_HOST" -p 6379 CLUSTER REPLICATE "$MASTER_ID"
+      $REDISCLI -h "$REPLICA_HOST" -p 6379 CLUSTER REPLICATE "$MASTER_ID"
     done
 
     if [ "$MODE" = "init" ]; then

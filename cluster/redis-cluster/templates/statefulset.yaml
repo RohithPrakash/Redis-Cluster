@@ -48,6 +48,11 @@ spec:
               readOnly: true
             - name: data
               mountPath: /data
+{{- if .Values.tls.enabled }}
+            - name: redis-tls
+              mountPath: /etc/redis/tls
+              readOnly: true
+{{- end }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
       {{- end }}
@@ -73,8 +78,14 @@ spec:
           livenessProbe:
             exec:
               command:
-                - redis-cli
-                - ping
+                - /bin/sh
+                - -c
+                - |
+{{- if .Values.tls.enabled }}
+                  redis-cli --tls --cacert /etc/redis/tls/{{ .Values.tls.caFilename }} ping
+{{- else }}
+                  redis-cli ping
+{{- end }}
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 5
@@ -85,7 +96,11 @@ spec:
                 - /bin/sh
                 - -c
                 - |
+{{- if .Values.tls.enabled }}
+                  redis-cli --tls --cacert /etc/redis/tls/{{ .Values.tls.caFilename }} -h 127.0.0.1 -p 6379 cluster info | grep -q "cluster_state:ok"
+{{- else }}
                   redis-cli -h 127.0.0.1 -p 6379 cluster info | grep -q "cluster_state:ok"
+{{- end }}
             initialDelaySeconds: 5
             periodSeconds: 5
             timeoutSeconds: 3
@@ -100,6 +115,11 @@ spec:
             - name: redis-config
               mountPath: /etc/redis
               readOnly: true
+{{- if .Values.tls.enabled }}
+            - name: redis-tls
+              mountPath: /etc/redis/tls
+              readOnly: true
+{{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -147,6 +167,11 @@ spec:
         - name: redis-scripts
           configMap:
             name: {{ include "redis-cluster.fullname" . }}-scripts
+{{- if .Values.tls.enabled }}
+        - name: redis-tls
+          secret:
+            secretName: {{ default (printf "%s-tls" (include "redis-cluster.fullname" .)) .Values.tls.existingSecret }}
+{{- end }}
         {{- if not .Values.persistence.enabled }}
         - name: data
           emptyDir: {}

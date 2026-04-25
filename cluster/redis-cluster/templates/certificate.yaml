@@ -1,0 +1,15 @@
+{{- if and .Values.tls.enabled .Values.tls.certManager.enabled }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "redis-cluster.fullname" . }}-tls
+  labels:
+    {{- include "redis-cluster.labels" . | nindent 4 }}
+spec:
+  secretName: {{ default (printf "%s-tls" (include "redis-cluster.fullname" .)) .Values.tls.existingSecret }}
+  dnsNames:
+    - "*.{{ include "redis-cluster.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local"
+    - "{{ include "redis-cluster.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local"
+  issuerRef:
+    {{- toYaml .Values.tls.certManager.issuerRef | nindent 4 }}
+{{- end }}

@@ -35,10 +35,20 @@ spec:
             - name: redis-scripts
               mountPath: /scripts
               readOnly: true
+{{- if .Values.tls.enabled }}
+            - name: redis-tls
+              mountPath: /etc/redis/tls
+              readOnly: true
+{{- end }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
       volumes:
         - name: redis-scripts
           configMap:
             name: {{ include "redis-cluster.fullname" . }}-scripts
+{{- if .Values.tls.enabled }}
+        - name: redis-tls
+          secret:
+            secretName: {{ default (printf "%s-tls" (include "redis-cluster.fullname" .)) .Values.tls.existingSecret }}
+{{- end }}
 {{- end }}

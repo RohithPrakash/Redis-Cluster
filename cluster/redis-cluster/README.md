@@ -222,6 +222,58 @@ These IDs match the `redis` user created inside the container image.
 
 ---
 
+## TLS
+
+The chart supports TLS-encrypted client connections. The cluster bus (port 16379) remains plaintext by default; inter-node traffic is protected by the NetworkPolicy.
+
+### Using an existing TLS Secret
+
+Create a Kubernetes Secret containing your certificate, key, and CA certificate:
+
+```bash
+kubectl create secret generic redis-cluster-tls \
+  --from-file=tls.crt=server.crt \
+  --from-file=tls.key=server.key \
+  --from-file=ca.crt=ca.crt
+```
+
+Install the chart with TLS enabled:
+
+```bash
+helm install redis-cluster cluster/redis-cluster/ \
+  --set tls.enabled=true \
+  --set tls.existingSecret=redis-cluster-tls
+```
+
+### Using cert-manager
+
+If you have [cert-manager](https://cert-manager.io/) installed, the chart can auto-generate a wildcard certificate:
+
+```bash
+helm install redis-cluster cluster/redis-cluster/ \
+  --set tls.enabled=true \
+  --set tls.certManager.enabled=true \
+  --set tls.certManager.issuerRef.name=my-issuer \
+  --set tls.certManager.issuerRef.kind=ClusterIssuer
+```
+
+The generated certificate will include SANs for:
+- `*.redis-cluster.default.svc.cluster.local`
+- `redis-cluster.default.svc.cluster.local`
+
+### Full TLS (cluster bus)
+
+To also encrypt the cluster bus, enable `tls.clusterBus`. **Warning:** your certificates must include SANs that match every pod's hostname, otherwise inter-node handshake will fail.
+
+```bash
+helm install redis-cluster cluster/redis-cluster/ \
+  --set tls.enabled=true \
+  --set tls.clusterBus=true \
+  --set tls.existingSecret=redis-cluster-tls
+```
+
+---
+
 ## Troubleshooting
 
 ### Pods stuck in `Pending`
@@ -259,11 +311,13 @@ cluster/redis-cluster/
 ├── README.md
 └── templates/
     ├── _helpers.tpl
+    ├── certificate.yaml
     ├── configmap.yaml
     ├── job.yaml
     ├── networkpolicy.yaml
     ├── NOTES.txt
     ├── pdb.yaml
+    ├── scripts-configmap.yaml
     ├── service.yaml
     ├── serviceaccount.yaml
     ├── statefulset.yaml

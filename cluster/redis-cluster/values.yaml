@@ -70,6 +70,28 @@ podDisruptionBudget:
 networkPolicy:
   enabled: true
 
+# TLS configuration for encrypted client connections.
+# The AlmaLinux 9 Redis package is compiled with OpenSSL TLS support.
+tls:
+  enabled: false
+  # Encrypt the cluster bus (port 16379) in addition to client connections.
+  # This is an advanced setting — your certificates must include SANs that match
+  # all pod hostnames, otherwise inter-node handshake will fail.
+  clusterBus: false
+  # Name of an existing Secret containing the certificate files.
+  # If empty and certManager is disabled, TLS will not be mounted.
+  existingSecret: ""
+  certFilename: tls.crt
+  keyFilename: tls.key
+  caFilename: ca.crt
+  # Auto-generate certificates using cert-manager.
+  certManager:
+    enabled: false
+    # issuerRef passed to the Certificate resource.
+    issuerRef: {}
+      # name: "my-issuer"
+      # kind: "ClusterIssuer"
+
 # Alternative bootstrap method using a Kubernetes Job.
 # Enable this if you prefer Job-based cluster creation over the initContainer approach.
 bootstrapJob:
