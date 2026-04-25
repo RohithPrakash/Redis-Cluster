@@ -188,6 +188,7 @@ The Job runs a single pod that:
 | `podDisruptionBudget.enabled` | `true` | Enable PDB |
 | `networkPolicy.enabled` | `true` | Enable NetworkPolicy |
 | `bootstrapJob.enabled` | `false` | Use Job instead of initContainer |
+| `tls.authClients` | `no` | Client certificate auth: `no`, `optional`, or `yes` |
 | `resources` | `{}` | CPU/memory limits and requests |
 | `affinity` | *(built-in defaults)* | Pod anti-affinity rules |
 
@@ -269,6 +270,25 @@ To also encrypt the cluster bus, enable `tls.clusterBus`. **Warning:** your cert
 helm install redis-cluster cluster/redis-cluster/ \
   --set tls.enabled=true \
   --set tls.clusterBus=true \
+  --set tls.existingSecret=redis-cluster-tls
+```
+
+### Client Certificate Authentication (mTLS)
+
+You can configure whether Redis requires client certificates for TLS connections:
+
+| Mode | Behavior |
+|------|----------|
+| `no` (default) | Clients do not need to present a certificate. |
+| `optional` | Clients may present a certificate; if they do, it is validated. |
+| `yes` | All clients must present a valid certificate signed by the CA. |
+
+When `authClients` is set to `optional` or `yes`, the chart automatically configures internal `redis-cli` connections (probes, bootstrap script, test pod) to present the server's own certificate as a client certificate. This works with cert-manager-generated certificates which include both server-auth and client-auth key usages.
+
+```bash
+helm install redis-cluster cluster/redis-cluster/ \
+  --set tls.enabled=true \
+  --set tls.authClients=optional \
   --set tls.existingSecret=redis-cluster-tls
 ```
 

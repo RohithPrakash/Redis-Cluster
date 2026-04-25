@@ -84,6 +84,11 @@ tls:
   certFilename: tls.crt
   keyFilename: tls.key
   caFilename: ca.crt
+  # Client certificate authentication mode.
+  # - "no"        : client certificates are not required
+  # - "optional"  : client certificates are optional; if presented, they are validated
+  # - "yes"       : client certificates are mandatory for all TLS connections
+  authClients: no
   # Auto-generate certificates using cert-manager.
   certManager:
     enabled: false

@@ -82,7 +82,7 @@ spec:
                 - -c
                 - |
 {{- if .Values.tls.enabled }}
-                  redis-cli --tls --cacert /etc/redis/tls/{{ .Values.tls.caFilename }} ping
+                  redis-cli --tls --cacert /etc/redis/tls/{{ .Values.tls.caFilename }}{{ if ne .Values.tls.authClients "no" }} --cert /etc/redis/tls/{{ .Values.tls.certFilename }} --key /etc/redis/tls/{{ .Values.tls.keyFilename }}{{ end }} ping
 {{- else }}
                   redis-cli ping
 {{- end }}
@@ -97,7 +97,7 @@ spec:
                 - -c
                 - |
 {{- if .Values.tls.enabled }}
-                  redis-cli --tls --cacert /etc/redis/tls/{{ .Values.tls.caFilename }} -h 127.0.0.1 -p 6379 cluster info | grep -q "cluster_state:ok"
+                  redis-cli --tls --cacert /etc/redis/tls/{{ .Values.tls.caFilename }}{{ if ne .Values.tls.authClients "no" }} --cert /etc/redis/tls/{{ .Values.tls.certFilename }} --key /etc/redis/tls/{{ .Values.tls.keyFilename }}{{ end }} -h 127.0.0.1 -p 6379 cluster info | grep -q "cluster_state:ok"
 {{- else }}
                   redis-cli -h 127.0.0.1 -p 6379 cluster info | grep -q "cluster_state:ok"
 {{- end }}

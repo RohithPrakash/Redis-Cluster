@@ -13,7 +13,7 @@ spec:
       imagePullPolicy: {{ .Values.image.pullPolicy }}
       command: ['redis-cli']
 {{- if .Values.tls.enabled }}
-      args: ['--tls', '--cacert', '/etc/redis/tls/{{ .Values.tls.caFilename }}', '-h', '{{ include "redis-cluster.fullname" . }}-0.{{ include "redis-cluster.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local', '-p', '6379', 'ping']
+      args: ['--tls', '--cacert', '/etc/redis/tls/{{ .Values.tls.caFilename }}'{{ if ne .Values.tls.authClients "no" }}, '--cert', '/etc/redis/tls/{{ .Values.tls.certFilename }}', '--key', '/etc/redis/tls/{{ .Values.tls.keyFilename }}'{{ end }}, '-h', '{{ include "redis-cluster.fullname" . }}-0.{{ include "redis-cluster.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local', '-p', '6379', 'ping']
       volumeMounts:
         - name: redis-tls
           mountPath: /etc/redis/tls

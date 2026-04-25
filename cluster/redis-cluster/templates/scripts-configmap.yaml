@@ -13,7 +13,7 @@ data:
     SERVICE={{ include "redis-cluster.fullname" . }}
     NAMESPACE={{ .Release.Namespace }}
 {{- if .Values.tls.enabled }}
-    REDISCLI="redis-cli --tls --cacert /etc/redis/tls/{{ .Values.tls.caFilename }}"
+    REDISCLI="redis-cli --tls --cacert /etc/redis/tls/{{ .Values.tls.caFilename }}{{ if ne .Values.tls.authClients "no" }} --cert /etc/redis/tls/{{ .Values.tls.certFilename }} --key /etc/redis/tls/{{ .Values.tls.keyFilename }}{{ end }}"
 {{- else }}
     REDISCLI="redis-cli"
 {{- end }}
