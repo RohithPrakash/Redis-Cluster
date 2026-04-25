@@ -7,7 +7,6 @@ metadata:
     {{- include "redis-cluster.labels" . | nindent 4 }}
 data:
   redis.conf: |
-    port 6379
     cluster-enabled yes
     cluster-node-timeout 15000
     cluster-require-full-coverage no
@@ -28,4 +27,6 @@ data:
     tls-auth-clients {{ .Values.tls.authClients }}
     tls-cluster {{ if .Values.tls.clusterBus }}yes{{ else }}no{{ end }}
     tls-protocols "TLSv1.2 TLSv1.3"
+{{- else }}
+    port 6379
 {{- end }}
