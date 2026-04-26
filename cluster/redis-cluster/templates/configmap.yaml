@@ -31,7 +31,16 @@ data:
     tls-ca-cert-file /etc/redis/tls/{{ .Values.tls.caFilename }}
     tls-auth-clients {{ .Values.tls.authClients }}
     tls-cluster {{ if .Values.tls.clusterBus }}yes{{ else }}no{{ end }}
+    tls-replication yes
     tls-protocols "TLSv1.2 TLSv1.3"
+    tls-prefer-server-ciphers yes
+    tls-ciphers ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256
+    tls-ciphersuites TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256
+{{- if .Values.tls.sessionCaching.enabled }}
+    tls-session-caching yes
+    tls-session-cache-size {{ .Values.tls.sessionCaching.size }}
+    tls-session-cache-timeout {{ .Values.tls.sessionCaching.timeout }}
+{{- end }}
 {{- else }}
     port 6379
 {{- end }}

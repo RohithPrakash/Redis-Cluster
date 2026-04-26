@@ -299,6 +299,27 @@ helm install redis-cluster cluster/redis-cluster/ \
   --set tls.existingSecret=redis-cluster-tls
 ```
 
+### TLS Hardening
+
+When TLS is enabled, the chart automatically applies hardened defaults:
+
+- **TLS versions**: Only TLS 1.2 and TLS 1.3 are allowed
+- **Cipher preference**: Server selects the cipher (`tls-prefer-server-ciphers yes`)
+- **TLS 1.2 ciphers**: ECDHE + AES-GCM only (Forward Secrecy + AEAD)
+- **TLS 1.3 ciphersuites**: `TLS_AES_256_GCM_SHA384`, `TLS_CHACHA20_POLY1305_SHA256`, `TLS_AES_128_GCM_SHA256`
+- **TLS replication**: Replica→master traffic is encrypted via `tls-replication yes`
+- **Session caching**: Enabled by default (20,480 sessions, 300s timeout) for lower handshake overhead
+
+You can disable or tune session caching:
+
+```bash
+helm install redis-cluster cluster/redis-cluster/ \
+  --set tls.enabled=true \
+  --set tls.sessionCaching.enabled=true \
+  --set tls.sessionCaching.size=20480 \
+  --set tls.sessionCaching.timeout=300
+```
+
 ---
 
 ## Security Hardening

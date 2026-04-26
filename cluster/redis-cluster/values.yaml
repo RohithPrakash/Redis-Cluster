@@ -116,6 +116,11 @@ tls:
   # - "optional"  : client certificates are optional; if presented, they are validated
   # - "yes"       : client certificates are mandatory for all TLS connections
   authClients: "no"
+  # TLS session caching reduces handshake overhead for reconnecting clients.
+  sessionCaching:
+    enabled: true
+    size: 20480
+    timeout: 300
   # Auto-generate certificates using cert-manager.
   certManager:
     enabled: false
