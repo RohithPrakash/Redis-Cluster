@@ -31,6 +31,7 @@ spec:
       serviceAccountName: {{ include "redis-cluster.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: 60
       {{- if not .Values.bootstrapJob.enabled }}
       initContainers:
         - name: cluster-bootstrap
@@ -40,6 +41,10 @@ spec:
           env:
             - name: BOOTSTRAP_ROLE
               value: "init"
+{{- if .Values.auth.enabled }}
+            - name: REDIS_PASSWORD
+              value: "{{ .Values.auth.password }}"
+{{- end }}
           volumeMounts:
             - name: redis-config
               mountPath: /etc/redis
@@ -49,6 +54,8 @@ spec:
               readOnly: true
             - name: data
               mountPath: /data
+            - name: tmp
+              mountPath: /tmp
 {{- if .Values.tls.enabled }}
             - name: redis-tls
               mountPath: /etc/redis/tls
@@ -61,6 +68,11 @@ spec:
         - name: redis
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+{{- if .Values.auth.enabled }}
+          env:
+            - name: REDIS_PASSWORD
+              value: "{{ .Values.auth.password }}"
+{{- end }}
           command:
             - /bin/sh
             - -c
@@ -83,9 +95,9 @@ spec:
                 - -c
                 - |
 {{- if .Values.tls.enabled }}
-                  redis-cli --tls --cacert /etc/redis/tls/{{ .Values.tls.caFilename }}{{ if ne .Values.tls.authClients "no" }} --cert /etc/redis/tls/{{ .Values.tls.certFilename }} --key /etc/redis/tls/{{ .Values.tls.keyFilename }}{{ end }} ping
+                  redis-cli {{- if .Values.auth.enabled }} -a {{ .Values.auth.password }}{{- end }} --tls --cacert /etc/redis/tls/{{ .Values.tls.caFilename }}{{ if ne .Values.tls.authClients "no" }} --cert /etc/redis/tls/{{ .Values.tls.certFilename }} --key /etc/redis/tls/{{ .Values.tls.keyFilename }}{{ end }} ping
 {{- else }}
-                  redis-cli ping
+                  redis-cli {{- if .Values.auth.enabled }} -a {{ .Values.auth.password }}{{- end }} ping
 {{- end }}
             initialDelaySeconds: 10
             periodSeconds: 10
@@ -98,9 +110,9 @@ spec:
                 - -c
                 - |
 {{- if .Values.tls.enabled }}
-                  redis-cli --tls --cacert /etc/redis/tls/{{ .Values.tls.caFilename }}{{ if ne .Values.tls.authClients "no" }} --cert /etc/redis/tls/{{ .Values.tls.certFilename }} --key /etc/redis/tls/{{ .Values.tls.keyFilename }}{{ end }} -h 127.0.0.1 -p 6379 cluster info | grep -q "cluster_state:ok"
+                  redis-cli {{- if .Values.auth.enabled }} -a {{ .Values.auth.password }}{{- end }} --tls --cacert /etc/redis/tls/{{ .Values.tls.caFilename }}{{ if ne .Values.tls.authClients "no" }} --cert /etc/redis/tls/{{ .Values.tls.certFilename }} --key /etc/redis/tls/{{ .Values.tls.keyFilename }}{{ end }} -h 127.0.0.1 -p 6379 cluster info | grep -q "cluster_state:ok"
 {{- else }}
-                  redis-cli -h 127.0.0.1 -p 6379 cluster info | grep -q "cluster_state:ok"
+                  redis-cli {{- if .Values.auth.enabled }} -a {{ .Values.auth.password }}{{- end }} -h 127.0.0.1 -p 6379 cluster info | grep -q "cluster_state:ok"
 {{- end }}
             initialDelaySeconds: 5
             periodSeconds: 5
@@ -116,6 +128,8 @@ spec:
             - name: redis-config
               mountPath: /etc/redis
               readOnly: true
+            - name: tmp
+              mountPath: /tmp
 {{- if .Values.tls.enabled }}
             - name: redis-tls
               mountPath: /etc/redis/tls
@@ -168,6 +182,8 @@ spec:
         - name: redis-scripts
           configMap:
             name: {{ include "redis-cluster.fullname" . }}-scripts
+        - name: tmp
+          emptyDir: {}
 {{- if .Values.tls.enabled }}
         - name: redis-tls
           secret:

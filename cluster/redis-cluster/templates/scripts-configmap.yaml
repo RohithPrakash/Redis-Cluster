@@ -14,10 +14,13 @@ data:
     SERVICE={{ include "redis-cluster.fullname" . }}
     NAMESPACE={{ .Release.Namespace }}
     CLUSTER_DOMAIN={{ .Values.clusterDomain }}
+{{- if .Values.auth.enabled }}
+    REDIS_PASSWORD="{{ .Values.auth.password }}"
+{{- end }}
 {{- if .Values.tls.enabled }}
-    REDISCLI="redis-cli --tls --cacert /etc/redis/tls/{{ .Values.tls.caFilename }}{{ if ne .Values.tls.authClients "no" }} --cert /etc/redis/tls/{{ .Values.tls.certFilename }} --key /etc/redis/tls/{{ .Values.tls.keyFilename }}{{ end }}"
+    REDISCLI="redis-cli {{- if .Values.auth.enabled }} -a $REDIS_PASSWORD{{- end }} --tls --cacert /etc/redis/tls/{{ .Values.tls.caFilename }}{{ if ne .Values.tls.authClients "no" }} --cert /etc/redis/tls/{{ .Values.tls.certFilename }} --key /etc/redis/tls/{{ .Values.tls.keyFilename }}{{ end }}"
 {{- else }}
-    REDISCLI="redis-cli"
+    REDISCLI="redis-cli {{- if .Values.auth.enabled }} -a $REDIS_PASSWORD{{- end }}"
 {{- end }}
 
     if [ "$((REPLICAS % 2))" -ne 0 ]; then

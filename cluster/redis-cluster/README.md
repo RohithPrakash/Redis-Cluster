@@ -189,10 +189,14 @@ The Job runs a single pod that:
 | `persistence.storageClass` | `standard` | StorageClass name |
 | `podDisruptionBudget.enabled` | `true` | Enable PDB |
 | `networkPolicy.enabled` | `true` | Enable NetworkPolicy |
+| `networkPolicy.egress.enabled` | `true` | Enable egress rules (DNS + intra-cluster only) |
 | `bootstrapJob.enabled` | `false` | Use Job instead of initContainer |
 | `tls.authClients` | `no` | Client certificate auth: `no`, `optional`, or `yes` |
 | `clusterDomain` | `cluster` | Kubernetes cluster domain suffix (`svc.<domain>.local`) |
-| `resources` | `{}` | CPU/memory limits and requests |
+| `auth.enabled` | `false` | Enable Redis password authentication |
+| `auth.password` | `""` | Redis password (also used for `masterauth`) |
+| `redisConfig.maxmemory` | `"96mb"` | Redis `maxmemory` directive |
+| `resources` | *(see values.yaml)* | CPU/memory limits and requests |
 | `affinity` | *(built-in defaults)* | Pod anti-affinity rules |
 
 ### Example: deploy with 8 nodes and custom resources
@@ -294,6 +298,50 @@ helm install redis-cluster cluster/redis-cluster/ \
   --set tls.authClients=optional \
   --set tls.existingSecret=redis-cluster-tls
 ```
+
+---
+
+## Security Hardening
+
+This chart includes several production-hardening defaults:
+
+### Container Security
+
+- **Non-root user** (UID/GID 999)
+- **Read-only root filesystem**
+- **RuntimeDefault seccomp profile**
+- **All capabilities dropped**
+- **`allowPrivilegeEscalation: false`**
+- **Resource limits** (500m CPU / 512Mi memory)
+
+### NetworkPolicy
+
+By default, the chart restricts both ingress and egress:
+
+| Direction | Allowed |
+|-----------|---------|
+| Ingress | Same-namespace pods with matching labels on ports 6379/16379 |
+| Egress | DNS (UDP 53) and intra-cluster pods on ports 6379/16379 |
+
+### Redis Password Authentication
+
+Enable password protection for Redis:
+
+```bash
+helm install redis-cluster cluster/redis-cluster/ \
+  --set auth.enabled=true \
+  --set auth.password=your-secret-password
+```
+
+When enabled, the chart automatically injects the password into:
+- `redis.conf` (`requirepass` and `masterauth`)
+- Liveness/readiness probes
+- Bootstrap script (initContainer and Job)
+- Helm test pod
+
+### ServiceAccount Token Automount
+
+The ServiceAccount token is **not mounted into pods** by default (`automount: false`) because Redis does not need to call the Kubernetes API.
 
 ---
 

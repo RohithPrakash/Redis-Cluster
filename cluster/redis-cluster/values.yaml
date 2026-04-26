@@ -25,7 +25,8 @@ serviceAccount:
   # Specifies whether a service account should be created.
   create: true
   # Automatically mount a ServiceAccount's API credentials?
-  automount: true
+  # The Redis pods do not need to call the Kubernetes API.
+  automount: false
   # Annotations to add to the service account.
   annotations: {}
   # The name of the service account to use.
@@ -38,12 +39,16 @@ podSecurityContext:
   runAsUser: 999
   runAsGroup: 999
   fsGroup: 999
+  seccompProfile:
+    type: RuntimeDefault
 
 securityContext:
   runAsUser: 999
   runAsGroup: 999
   allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: false
+  readOnlyRootFilesystem: true
+  seccompProfile:
+    type: RuntimeDefault
   capabilities:
     drop:
       - ALL
@@ -53,13 +58,13 @@ persistence:
   size: 100Mi
   storageClass: standard
 
-resources: {}
-  # limits:
-  #   cpu: 500m
-  #   memory: 512Mi
-  # requests:
-  #   cpu: 100m
-  #   memory: 128Mi
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
 
 # Affinity rules for pod scheduling. If left empty or not set, default anti-affinity rules
 # (required on hostname, preferred on zone) will be applied.
@@ -75,6 +80,22 @@ podDisruptionBudget:
 
 networkPolicy:
   enabled: true
+  egress:
+    enabled: true
+
+# Redis authentication.
+# When enabled, all redis-cli calls (probes, bootstrap, tests) automatically
+# include the password. Set requirepass and masterauth in redis.conf.
+auth:
+  enabled: false
+  password: ""
+  # Name of an existing Secret containing the Redis password.
+  existingSecret: ""
+  existingSecretPasswordKey: "password"
+
+# Redis configuration directives.
+redisConfig:
+  maxmemory: "96mb"
 
 # TLS configuration for encrypted client connections.
 # The AlmaLinux 9 Redis package is compiled with OpenSSL TLS support.

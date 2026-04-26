@@ -14,9 +14,14 @@ data:
     protected-mode no
     bind 0.0.0.0
     maxmemory-policy allkeys-lru
+    maxmemory {{ .Values.redisConfig.maxmemory }}
     cluster-config-file /data/nodes.conf
     cluster-preferred-endpoint-type hostname
     dir /data
+{{- if .Values.auth.enabled }}
+    requirepass {{ .Values.auth.password }}
+    masterauth {{ .Values.auth.password }}
+{{- end }}
 {{- if .Values.tls.enabled }}
     port 0
     tls-port 6379

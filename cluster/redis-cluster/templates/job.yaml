@@ -32,10 +32,16 @@ spec:
           env:
             - name: BOOTSTRAP_ROLE
               value: "job"
+{{- if .Values.auth.enabled }}
+            - name: REDIS_PASSWORD
+              value: "{{ .Values.auth.password }}"
+{{- end }}
           volumeMounts:
             - name: redis-scripts
               mountPath: /scripts
               readOnly: true
+            - name: tmp
+              mountPath: /tmp
 {{- if .Values.tls.enabled }}
             - name: redis-tls
               mountPath: /etc/redis/tls
@@ -47,6 +53,8 @@ spec:
         - name: redis-scripts
           configMap:
             name: {{ include "redis-cluster.fullname" . }}-scripts
+        - name: tmp
+          emptyDir: {}
 {{- if .Values.tls.enabled }}
         - name: redis-tls
           secret:
