@@ -26,11 +26,11 @@ kind load docker-image redis-cluster:7.2
 ### 2. Install the chart
 
 ```bash
-helm install redis-cluster cluster/redis-cluster/
+helm install redis-cluster helm/redis-cluster/
 
 # If the Kubernetes cluster has a single node
 
-helm install redis-cluster cluster/redis-cluster/ --set-json affinity='{}'
+helm install redis-cluster helm/redis-cluster/ --set-json affinity='{}'
 ```
 
 ### 3. Verify the cluster
@@ -93,7 +93,7 @@ By default, the chart includes **PodAntiAffinity** rules:
 For single-node test clusters (e.g., `kind`), disable the default anti-affinity:
 
 ```bash
-helm install redis-cluster cluster/redis-cluster/ \
+helm install redis-cluster helm/redis-cluster/ \
   --set-json affinity='{}'
 ```
 
@@ -158,7 +158,7 @@ The standard `redis-cli --cluster create` utility hangs when nodes are configure
 If you prefer **not** to use the initContainer, you can enable an optional Kubernetes **Job** that performs cluster creation after Helm installation:
 
 ```bash
-helm install redis-cluster cluster/redis-cluster/ \
+helm install redis-cluster helm/redis-cluster/ \
   --set bootstrapJob.enabled=true
 ```
 
@@ -202,7 +202,7 @@ The Job runs a single pod that:
 ### Example: deploy with 8 nodes and custom resources
 
 ```bash
-helm install redis-cluster cluster/redis-cluster/ \
+helm install redis-cluster helm/redis-cluster/ \
   --set redisCluster.replicas=8 \
   --set resources.limits.cpu=1 \
   --set resources.limits.memory=1Gi \
@@ -248,7 +248,7 @@ kubectl create secret generic redis-cluster-tls \
 Install the chart with TLS enabled:
 
 ```bash
-helm install redis-cluster cluster/redis-cluster/ \
+helm install redis-cluster helm/redis-cluster/ \
   --set tls.enabled=true \
   --set tls.existingSecret=redis-cluster-tls
 ```
@@ -258,7 +258,7 @@ helm install redis-cluster cluster/redis-cluster/ \
 If you have [cert-manager](https://cert-manager.io/) installed, the chart can auto-generate a wildcard certificate:
 
 ```bash
-helm install redis-cluster cluster/redis-cluster/ \
+helm install redis-cluster helm/redis-cluster/ \
   --set tls.enabled=true \
   --set tls.certManager.enabled=true \
   --set tls.certManager.issuerRef.name=my-issuer \
@@ -274,7 +274,7 @@ The generated certificate will include SANs for:
 To also encrypt the cluster bus, enable `tls.clusterBus`. **Warning:** your certificates must include SANs that match every pod's hostname, otherwise inter-node handshake will fail.
 
 ```bash
-helm install redis-cluster cluster/redis-cluster/ \
+helm install redis-cluster helm/redis-cluster/ \
   --set tls.enabled=true \
   --set tls.clusterBus=true \
   --set tls.existingSecret=redis-cluster-tls
@@ -293,7 +293,7 @@ You can configure whether Redis requires client certificates for TLS connections
 When `authClients` is set to `optional` or `yes`, the chart automatically configures internal `redis-cli` connections (probes, bootstrap script, test pod) to present the server's own certificate as a client certificate. This works with cert-manager-generated certificates which include both server-auth and client-auth key usages.
 
 ```bash
-helm install redis-cluster cluster/redis-cluster/ \
+helm install redis-cluster helm/redis-cluster/ \
   --set tls.enabled=true \
   --set tls.authClients=optional \
   --set tls.existingSecret=redis-cluster-tls
@@ -313,7 +313,7 @@ When TLS is enabled, the chart automatically applies hardened defaults:
 You can disable or tune session caching:
 
 ```bash
-helm install redis-cluster cluster/redis-cluster/ \
+helm install redis-cluster helm/redis-cluster/ \
   --set tls.enabled=true \
   --set tls.sessionCaching.enabled=true \
   --set tls.sessionCaching.size=20480 \
@@ -349,7 +349,7 @@ By default, the chart restricts both ingress and egress:
 Enable password protection for Redis:
 
 ```bash
-helm install redis-cluster cluster/redis-cluster/ \
+helm install redis-cluster helm/redis-cluster/ \
   --set auth.enabled=true \
   --set auth.password=your-secret-password
 ```
@@ -375,7 +375,7 @@ If you see `0/1 nodes are available: 1 node(s) didn't match pod anti-affinity ru
 ```bash
 helm uninstall redis-cluster
 kubectl delete pvc -l app.kubernetes.io/name=redis-cluster
-helm install redis-cluster cluster/redis-cluster/ --set-json affinity='{}'
+helm install redis-cluster helm/redis-cluster/ --set-json affinity='{}'
 ```
 
 ### Cluster not forming
@@ -397,7 +397,7 @@ kubectl logs -l app.kubernetes.io/name=redis-cluster -l app.kubernetes.io/compon
 ## Files in this Chart
 
 ```
-cluster/redis-cluster/
+helm/redis-cluster/
 ├── Chart.yaml
 ├── values.yaml
 ├── README.md

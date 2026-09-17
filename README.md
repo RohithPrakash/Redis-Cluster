@@ -11,7 +11,7 @@ This repository contains a **production-ready container image** and **Helm chart
 | Component | Path | Description |
 |-----------|------|-------------|
 | **Dockerfile** | [`dockerfile`](./dockerfile) | AlmaLinux 9 based image with Redis 7.2 |
-| **Helm Chart** | [`cluster/redis-cluster/`](./cluster/redis-cluster/) | Full Kubernetes deployment chart |
+| **Helm Chart** | [`helm/redis-cluster/`](./helm/redis-cluster/) | Full Kubernetes deployment chart |
 
 ---
 
@@ -52,7 +52,7 @@ kind load docker-image redis-cluster:7.2
 
 For full documentation on deploying, configuring, and operating the Redis Cluster on Kubernetes, see the Helm chart's dedicated README:
 
-👉 **[cluster/redis-cluster/README.md](./cluster/redis-cluster/README.md)**
+👉 **[helm/redis-cluster/README.md](./helm/redis-cluster/README.md)**
 
 It covers:
 - Installation and uninstallation commands
@@ -73,11 +73,11 @@ docker build -t redis-cluster:7.2 -f dockerfile .
 kind load docker-image redis-cluster:7.2
 
 # 2. Install the Helm chart
-helm install redis-cluster cluster/redis-cluster/
+helm install redis-cluster helm/redis-cluster/
 
 # If the Kubernetes cluster has a single node
 
-helm install redis-cluster cluster/redis-cluster/ --set-json affinity='{}'
+helm install redis-cluster helm/redis-cluster/ --set-json affinity='{}'
 
 # 3. Verify cluster health
 kubectl exec -it redis-cluster-0 -- redis-cli cluster info
@@ -92,7 +92,7 @@ kubectl exec -it redis-cluster-0 -- redis-cli cluster nodes
 .
 ├── dockerfile                          # AlmaLinux 9 + Redis 7.2 image
 ├── README.md                           # You are here
-└── cluster/redis-cluster/
+└── helm/redis-cluster/
     ├── README.md                       # Helm chart documentation
     ├── Chart.yaml
     ├── values.yaml
