@@ -25,6 +25,26 @@ spec:
           port: 6379
         - protocol: TCP
           port: 16379
+    # Clients: the bootstrap Job, the helm test pod and
+    # networkPolicy.allowedClients.
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - {{ include "redis-cluster.name" . }}-bootstrap
+                  - {{ include "redis-cluster.name" . }}-test
+              - key: app.kubernetes.io/instance
+                operator: In
+                values:
+                  - {{ .Release.Name }}
+        {{- with .Values.networkPolicy.allowedClients }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 6379
 {{- if .Values.networkPolicy.egress.enabled }}
   egress:
     # Allow DNS resolution

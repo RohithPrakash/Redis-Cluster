@@ -13,8 +13,14 @@ metadata:
 spec:
   template:
     metadata:
+      # Not the Redis pods' selector labels, for the same reasons as the
+      # helm test pod: Service, PDB and anti-affinity.
       labels:
-        {{- include "redis-cluster.labels" . | nindent 8 }}
+        helm.sh/chart: {{ include "redis-cluster.chart" . }}
+        app.kubernetes.io/name: {{ include "redis-cluster.name" . }}-bootstrap
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/managed-by: {{ .Release.Service }}
+        app.kubernetes.io/component: bootstrap
     spec:
       restartPolicy: OnFailure
       {{- with .Values.imagePullSecrets }}

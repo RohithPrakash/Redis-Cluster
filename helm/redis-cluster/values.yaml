@@ -85,8 +85,26 @@ tolerations: []
 podDisruptionBudget:
   enabled: true
 
+# Time a pod gets to shut down. A terminating master first hands its slots to
+# a replica (preStop hook, bounded to this value minus 10 s), then Redis stops.
+terminationGracePeriodSeconds: 60
+
 networkPolicy:
   enabled: true
+  # Sources allowed to reach the client port (6379). Redis pods always reach
+  # each other on 6379 and 16379. Each entry is a NetworkPolicy "from" peer.
+  # Clients in other namespaces need a namespaceSelector (with an optional
+  # podSelector in the same entry to narrow it down).
+  allowedClients: []
+  #  - podSelector:
+  #      matchLabels:
+  #        app: my-app
+  #  - namespaceSelector:
+  #      matchLabels:
+  #        kubernetes.io/metadata.name: other-namespace
+  #    podSelector:
+  #      matchLabels:
+  #        app: my-app
   egress:
     enabled: true
 

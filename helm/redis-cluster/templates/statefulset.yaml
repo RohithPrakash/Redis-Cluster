@@ -31,7 +31,7 @@ spec:
       serviceAccountName: {{ include "redis-cluster.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
-      terminationGracePeriodSeconds: 60
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       {{- if not .Values.bootstrapJob.enabled }}
       initContainers:
         - name: cluster-bootstrap
@@ -39,6 +39,10 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["/bin/sh", "/scripts/bootstrap.sh"]
           env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
             - name: BOOTSTRAP_ROLE
               value: "init"
             {{- if .Values.auth.enabled }}
@@ -130,6 +134,12 @@ spec:
               mountPath: /etc/redis/tls
               readOnly: true
 {{- end }}
+          # Hand a master's slots to a replica before shutdown, so planned
+          # restarts and drains do not wait for a failover election.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "/scripts/prestop.sh"]
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

@@ -47,6 +47,8 @@ kubectl exec -it redis-cluster-0 -- redis-cli cluster nodes
 helm test redis-cluster
 ```
 
+The test pod uses its own labels (`app.kubernetes.io/name: redis-cluster-test`), so it is not part of the Service or PDB and the Redis anti-affinity does not keep it off nodes that run Redis.
+
 ---
 
 ## Uninstall
@@ -104,8 +106,36 @@ A `PodDisruptionBudget` is created with `minAvailable: n-1`, ensuring only **one
 ### NetworkPolicy
 
 An optional `NetworkPolicy` restricts ingress to:
-- Port `6379` from pods in the same namespace with matching labels
-- Port `16379` from pods in the same namespace with matching labels
+- Ports `6379` and `16379` from the other Redis pods of the release
+- Port `6379` from the bootstrap Job, the helm test pod, and the sources in `networkPolicy.allowedClients`
+
+**Clients are blocked until you list them** in `networkPolicy.allowedClients`. Each entry is a NetworkPolicy `from` peer:
+
+```yaml
+networkPolicy:
+  allowedClients:
+    # Pods with this label in the release namespace
+    - podSelector:
+        matchLabels:
+          app: my-app
+    # Pods with this label in another namespace
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: other-namespace
+      podSelector:
+        matchLabels:
+          app: my-app
+```
+
+A `namespaceSelector` and a `podSelector` in the **same** entry must both match. As separate entries, either one is enough.
+
+### Graceful handover (preStop)
+
+When a pod that is a master is stopped on purpose (`kubectl delete pod`, a rolling restart, a node drain), a `preStop` hook first runs `CLUSTER FAILOVER` on one of its connected replicas and waits for this node to become a replica. The replica takes over without data loss and clients are redirected to it, so planned restarts cause no write errors instead of waiting out the 15 s `cluster-node-timeout` and a failover election.
+
+The hook tries each healthy replica in turn and gives up `terminationGracePeriodSeconds` minus 10 s after it started (50 s with the default of 60; half the grace period when it is 20 s or less). If no replica takes over, the pod shuts down as a master, as it did before. Replicas skip the hook. Its output goes to the container log (`kubectl logs <pod> -c redis | grep preStop`).
+
+Each handover moves a master to another pod, so after a rolling restart the masters are usually on different pods than before.
 
 ---
 
@@ -136,12 +166,16 @@ At startup, `start.sh` copies this file to `/data/redis.conf` and appends the pe
 
 ```conf
 cluster-announce-ip <pod IP, from the downward API>
-cluster-announce-hostname <pod name>.redis-cluster
+cluster-announce-hostname <pod>.<service>.<namespace>.svc.<clusterDomain>.local
 ```
+
+The bootstrap's temporary Redis server gets the same two settings. Without them its gossip erased `redis-cluster-0`'s hostname from the other nodes, and clients were redirected to the endpoint `?`.
 
 ### Why `cluster-preferred-endpoint-type hostname`?
 
 In Kubernetes, pod IPs are **ephemeral**. By setting `cluster-preferred-endpoint-type hostname` and injecting `cluster-announce-hostname` at startup, each node advertises its **stable DNS name** to clients (in `CLUSTER SLOTS`, `CLUSTER SHARDS` and `MOVED` redirects) instead of its ephemeral IP.
+
+The announced hostname is the pod's fully qualified name, so it resolves from **any namespace**. A namespace-relative name such as `redis-cluster-0.redis-cluster` only resolves inside the release namespace, and cluster-aware clients elsewhere failed on their first redirect. If you use TLS with hostname verification, the server certificate needs a SAN of `*.<service>.<namespace>.svc.<clusterDomain>.local` (the cert-manager certificate has it).
 
 This only affects what clients see. Redis nodes still talk to each other over the cluster bus by **IP**, so `cluster-announce-ip` is set to the pod IP and `nodes.conf` records peers by IP.
 
@@ -150,6 +184,19 @@ This only affects what clients see. Redis nodes still talk to each other over th
 When a single pod restarts, it still knows its peers' IPs. It reconnects to them and announces its new IP. When **all** pods are recreated at once (for example, scaling the StatefulSet to 0 and back), every IP in every `nodes.conf` is stale and no node can reach any other.
 
 To handle this, the main container runs [`start.sh`](templates/scripts-configmap.yaml). When the node already belongs to a cluster, the script resolves each peer's stable DNS name in the background and sends `CLUSTER MEET <current-ip>`. The MEET handshake matches the peer's existing node ID and updates its address, so the cluster re-forms with its original slots and data. On a fresh install, `nodes.conf` has no peers and this step is skipped, leaving cluster creation to the bootstrap.
+
+### Replacing a node that lost its disk
+
+When a pod comes back with an empty volume (a lost or deleted PVC, a replaced node with local storage), it starts as a brand-new Redis node that knows no peers. `start.sh` detects this and joins it to the running cluster without manual steps:
+
+1. **Join.** While the node knows only itself, it checks its peers. Once one of them serves slots, it sends `CLUSTER MEET` to that peer. On a fresh install this never fires, because the bootstrap introduces every node before it assigns any slots.
+2. **Wait for the old identity to fail.** The peers still remember the node ID this pod had before. The script waits until they have flagged it `fail`, which also means that a lost master has failed over to its replica.
+3. **Become a replica.** It runs `CLUSTER REPLICATE` on the healthy master with the fewest healthy replicas. Normally that is the master that lost its replica, or the replica that took over from this pod. It waits until this choice has been stable for 16 s, so it never competes with the bootstrap, which assigns replicas right after the slots.
+4. **Forget the old identity.** It runs `CLUSTER FORGET` for every dead node ID that announced this pod's hostname, on every node, within the 60 s window after which gossip would add it back.
+
+Progress shows in `kubectl logs <pod> -c redis` (`Peers already form a cluster`, `replicating`, `Forgot old node ID`). The pod is Ready (as an empty master serving no slots) before step 3 finishes, typically 30-40 s after it starts.
+
+The node only adopts a master that is healthy and serves slots. If a whole shard is gone (a master and all its replicas lost their data), the slots stay uncovered and need manual recovery.
 
 ### Redis version notes
 
@@ -281,13 +328,15 @@ The StatefulSet includes an **initContainer** named `cluster-bootstrap` that run
 
 ### What it does
 
-1. **Idempotency check** - Starts a temporary Redis instance and checks whether `cluster_state` is already `ok` or whether it already knows multiple cluster nodes. If so, it exits immediately.
-2. **Waits for peers** - Pings every pod (`redis-cluster-0` through `redis-cluster-n`) until all respond.
-3. **Forms the cluster** using manual Redis cluster commands:
+1. **Idempotency check** - If `redis-cluster-0`'s `nodes.conf` already lists other nodes, it exits immediately. The main container reconnects the node.
+2. **Checks that no cluster exists** - Queries every peer until all respond. If **any** peer has slots or knows other nodes, a cluster already exists (for example, `redis-cluster-0` lost its disk), so it exits without creating anything and leaves the join to `start.sh` (see [Replacing a node that lost its disk](#replacing-a-node-that-lost-its-disk)).
+3. **Forms the cluster** from a temporary Redis instance (with the same announce settings as the main container), using manual Redis cluster commands:
    - `CLUSTER MEET` - Introduces each peer to the seed node
-   - `CLUSTER ADDSLOTS` - Assigns hash slots to the three master nodes
+   - `CLUSTER ADDSLOTSRANGE` - Assigns hash slots to the master nodes
    - `CLUSTER REPLICATE` - Attaches replicas to their respective masters
 4. **Cleans up** - Shuts down the temporary Redis instance and allows the main container to start.
+
+Every command fails the script on a Redis error reply. (`redis-cli` prints error replies such as `ERR Slot 0 is already busy` but still exits 0, so `set -e` alone never caught them.) A failed init container is restarted by the kubelet. If creation stops after the first `CLUSTER MEET`, the nodes already know each other, so later runs treat them as an existing cluster and do nothing; see [Cluster not forming](#cluster-not-forming).
 
 ### Why not `redis-cli --cluster create`?
 
@@ -306,15 +355,15 @@ helm install redis-cluster helm/redis-cluster/ \
 
 ### What the Job does
 
-The Job runs a single pod that:
-1. Waits for all StatefulSet pods to respond to `PING`
-2. Checks whether the cluster is already initialized (idempotency)
-3. Runs `redis-cli --cluster create ... --cluster-replicas 1 --cluster-yes`
+The Job runs the same [`bootstrap.sh`](templates/scripts-configmap.yaml) as the initContainer, against `redis-cluster-0`'s running server:
+1. Waits for all StatefulSet pods to respond, and exits without changes if any of them already belongs to a cluster (idempotency, including on `helm upgrade`)
+2. Forms the cluster with `CLUSTER MEET`, `CLUSTER ADDSLOTSRANGE` and `CLUSTER REPLICATE`
 
 ### Important
 
 - The Job and the initContainer are **mutually exclusive**. Enabling the Job automatically removes the initContainer from the StatefulSet.
 - The Job is registered as a Helm `post-install,post-upgrade` hook.
+- Do not install with `helm install --wait`: Helm waits for the pods to be Ready before it runs the hook, and they only become Ready once the hook has created the cluster.
 
 ---
 
@@ -332,7 +381,9 @@ The Job runs a single pod that:
 | `persistence.validateSize` | `true` | Fail the install or upgrade when `persistence.size` is below 3 × `redisConfig.maxmemory` |
 | `podDisruptionBudget.enabled` | `true` | Enable PDB |
 | `networkPolicy.enabled` | `true` | Enable NetworkPolicy |
+| `networkPolicy.allowedClients` | `[]` | NetworkPolicy `from` peers allowed to reach port 6379 (see [NetworkPolicy](#networkpolicy)) |
 | `networkPolicy.egress.enabled` | `true` | Enable egress rules (DNS + intra-cluster only) |
+| `terminationGracePeriodSeconds` | `60` | Pod shutdown budget; the preStop handover gets this minus 10 s (half of it when 20 s or less) |
 | `bootstrapJob.enabled` | `false` | Use Job instead of initContainer |
 | `tls.authClients` | `no` | Client certificate auth: `no`, `optional`, or `yes` |
 | `clusterDomain` | `cluster` | Kubernetes cluster domain suffix (`svc.<domain>.local`) |
@@ -505,7 +556,7 @@ By default, the chart restricts both ingress and egress:
 
 | Direction | Allowed |
 |-----------|---------|
-| Ingress | Same-namespace pods with matching labels on ports 6379/16379 |
+| Ingress | Redis pods of the release on ports 6379/16379; bootstrap Job, helm test pod and `networkPolicy.allowedClients` on port 6379 |
 | Egress | DNS (UDP 53) and intra-cluster pods on ports 6379/16379 |
 
 ### Redis Password Authentication
@@ -570,7 +621,14 @@ kubectl logs redis-cluster-0 -c cluster-bootstrap
 Or, if using the Job:
 
 ```bash
-kubectl logs -l app.kubernetes.io/name=redis-cluster -l app.kubernetes.io/component=bootstrap
+kubectl logs -l app.kubernetes.io/name=redis-cluster-bootstrap
+```
+
+If the logs say a peer `already belongs to a cluster` but no node has slots, an earlier creation attempt stopped after `CLUSTER MEET`. The bootstrap never runs creation steps against nodes that already know each other, so reset them by hand (with no slots assigned, no node holds data yet), then delete `redis-cluster-0` to rerun the bootstrap:
+
+```bash
+for i in 0 1 2 3 4 5; do kubectl exec redis-cluster-$i -c redis -- redis-cli CLUSTER RESET HARD; done
+kubectl delete pod redis-cluster-0
 ```
 
 ### Pods crash-loop with `Cluster announce IP must be a valid IPv4 or IPv6 address`
@@ -594,10 +652,10 @@ The pod's disk is full. See [Recovering a full disk](#recovering-a-full-disk).
 After a full restart (for example, scaling to 0 and back), each node re-introduces its peers by their current IPs. Check that this happened:
 
 ```bash
-kubectl logs redis-cluster-1 -c redis | grep Rejoining
+kubectl logs redis-cluster-1 -c redis | grep Rejoined
 ```
 
-You should see one `Rejoining ...` line per peer. A node logs nothing until that peer answers `PING`, so a missing line points to a peer that is not up or not resolvable in DNS.
+You should see one `Rejoined ...` line per peer. A node logs nothing until that peer answers `PING`, so a missing line points to a peer that is not up or not resolvable in DNS.
 
 After a full restart, `cluster_state:ok` (and pod readiness) can briefly report healthy before the `cluster-node-timeout` (`redisConfig.clusterNodeTimeout`, 15 s by default) expires, because nodes have not yet noticed their peers are gone. Check `redis-cli cluster nodes` for `fail` or `fail?` flags rather than relying on the first readiness result.
 

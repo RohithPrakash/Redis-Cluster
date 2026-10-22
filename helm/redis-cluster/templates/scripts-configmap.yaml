@@ -6,6 +6,47 @@ metadata:
   labels:
     {{- include "redis-cluster.labels" . | nindent 4 }}
 data:
+  # Helpers sourced by the other scripts. They expect SERVICE, NAMESPACE,
+  # CLUSTER_DOMAIN and REDISCLI to be set.
+  lib.sh: |
+    # rcli <redis-cli args...>
+    # redis-cli prints Redis error replies (ERR, BUSY, CLUSTERDOWN...) on
+    # stdout and still exits 0, so `set -e` never catches them. Treat them as
+    # failures here and print the reply on stderr.
+    rcli() {
+      _out=$($REDISCLI "$@") || return 1
+      if printf '%s\n' "$_out" | head -n 1 | grep -Eq '^[A-Z]{2,} '; then
+        echo "redis-cli $* failed: $_out" >&2
+        return 1
+      fi
+      printf '%s\n' "$_out"
+    }
+
+    # pod_fqdn <pod name>: the name clients and peers use to reach a pod. It
+    # resolves from any namespace.
+    pod_fqdn() {
+      echo "$1.${SERVICE}.${NAMESPACE}.svc.${CLUSTER_DOMAIN}.local"
+    }
+
+    # info_field <CLUSTER INFO output> <field>
+    info_field() {
+      printf '%s\n' "$1" | awk -F: -v k="$2" '$1 == k {gsub(/[[:space:]]/, "", $2); print $2}'
+    }
+
+    # announce_config: settings that make a node advertise its pod IP on the
+    # cluster bus and its FQDN to clients. Every redis-server the chart starts
+    # needs them; without a hostname, peers drop the pod's hostname and hand
+    # clients the endpoint "?".
+    announce_config() {
+      echo "cluster-announce-ip ${POD_IP}"
+      echo "cluster-announce-hostname $(pod_fqdn "$(hostname)")"
+    }
+
+    wait_for_local_redis() {
+      until rcli -h 127.0.0.1 -p 6379 ping 2>/dev/null | grep -q PONG; do
+        sleep 1
+      done
+    }
   bootstrap.sh: |
     #!/bin/sh
     set -e
@@ -15,6 +56,7 @@ data:
     NAMESPACE={{ .Release.Namespace }}
     CLUSTER_DOMAIN={{ .Values.clusterDomain }}
     REDISCLI="{{ include "redis-cluster.redisCli" . }}"
+    . /scripts/lib.sh
 
     if [ "$((REPLICAS % 2))" -ne 0 ]; then
       echo "ERROR: redisCluster.replicas must be an even number (n/2 masters, n/2 replicas)."
@@ -30,8 +72,49 @@ data:
     if [ "$POD_NAME" = "${SERVICE}-0" ]; then
       MODE="init"
       TARGET_HOST="127.0.0.1"
+      FIRST_PEER=1
+      # An existing nodes.conf means this node already joined a cluster;
+      # start.sh reconnects it. Starting a temporary server here would only
+      # make the node flap in and out of the cluster.
+      if [ -f /data/nodes.conf ] && [ "$(grep -cv '^vars' /data/nodes.conf)" -gt 1 ]; then
+        echo "This node already belongs to a cluster. Skipping creation."
+        exit 0
+      fi
+    else
+      MODE="job"
+      TARGET_HOST="$(pod_fqdn "${SERVICE}-0")"
+      FIRST_PEER=0
+    fi
 
+    # Only create a cluster when every node is empty. If any node already has
+    # slots or knows other nodes, a cluster exists (for example, this pod lost
+    # its disk) and running creation steps against it would be wrong. start.sh
+    # joins an empty node to an existing cluster instead.
+    echo "Checking that no node already belongs to a cluster..."
+    while :; do
+      PENDING=""
+      for i in $(seq "$FIRST_PEER" $((REPLICAS - 1))); do
+        HOST="$(pod_fqdn "${SERVICE}-${i}")"
+        if ! INFO=$(rcli -h "$HOST" -p 6379 cluster info 2>/dev/null); then
+          PENDING="$PENDING $i"
+          continue
+        fi
+        KNOWN=$(info_field "$INFO" cluster_known_nodes)
+        SLOTS=$(info_field "$INFO" cluster_slots_assigned)
+        if [ "${KNOWN:-1}" -gt 1 ] || [ "${SLOTS:-0}" -gt 0 ]; then
+          echo "$HOST already belongs to a cluster (known_nodes=$KNOWN, slots_assigned=$SLOTS)."
+          echo "Not creating a new cluster; empty nodes join the existing one from start.sh."
+          exit 0
+        fi
+      done
+      [ -n "$PENDING" ] || break
+      echo "Waiting for nodes to respond:$PENDING"
+      sleep 2
+    done
+
+    if [ "$MODE" = "init" ]; then
       cp /etc/redis/redis.conf /data/redis.conf
+      announce_config >> /data/redis.conf
       {{- include "redis-cluster.appendAuthConf" . | nindent 6 }}
       redis-server /data/redis.conf &
       REDIS_PID=$!
@@ -42,45 +125,22 @@ data:
       }
       trap cleanup EXIT
 
-      sleep 2
-
-      if $REDISCLI -h "$TARGET_HOST" -p 6379 cluster info 2>/dev/null | grep -q "cluster_state:ok"; then
-        echo "Cluster already initialized."
-        exit 0
-      fi
-
-      KNOWN_NODES=$($REDISCLI -h "$TARGET_HOST" -p 6379 cluster info 2>/dev/null | awk -F: '/cluster_known_nodes:/{print $2}' | tr -d '[:space:]')
-      if [ -n "$KNOWN_NODES" ] && [ "$KNOWN_NODES" -gt 1 ] 2>/dev/null; then
-        echo "Node already knows $KNOWN_NODES cluster nodes. Skipping creation."
-        exit 0
-      fi
-    else
-      MODE="job"
-      TARGET_HOST="${SERVICE}-0.${SERVICE}.${NAMESPACE}.svc.${CLUSTER_DOMAIN}.local"
-
-      if $REDISCLI -h "$TARGET_HOST" -p 6379 cluster info 2>/dev/null | grep -q "cluster_state:ok"; then
-        echo "Cluster already initialized."
-        exit 0
-      fi
+      wait_for_local_redis
     fi
-
-    for i in $(seq 0 $((REPLICAS - 1))); do
-      HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.${CLUSTER_DOMAIN}.local"
-      echo "Waiting for $HOST to respond to PING..."
-      until $REDISCLI -h "$HOST" -p 6379 ping | grep -q PONG; do
-        sleep 2
-      done
-    done
 
     echo "Joining nodes to the cluster..."
     for i in $(seq 1 $((REPLICAS - 1))); do
-      HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.${CLUSTER_DOMAIN}.local"
-      IP=$(getent hosts "$HOST" | awk '{print $1}')
-      $REDISCLI -h "$TARGET_HOST" -p 6379 CLUSTER MEET "$IP" 6379
+      HOST="$(pod_fqdn "${SERVICE}-${i}")"
+      IP=$(getent hosts "$HOST" | awk '{print $1; exit}')
+      if [ -z "$IP" ]; then
+        echo "ERROR: cannot resolve $HOST"
+        exit 1
+      fi
+      rcli -h "$TARGET_HOST" -p 6379 CLUSTER MEET "$IP" 6379 >/dev/null
     done
 
     echo "Waiting for all nodes to be known..."
-    until [ "$($REDISCLI -h "$TARGET_HOST" -p 6379 cluster info | awk -F: '/cluster_known_nodes:/{print $2}' | tr -d '[:space:]')" = "$REPLICAS" ]; do
+    until [ "$(info_field "$(rcli -h "$TARGET_HOST" -p 6379 cluster info)" cluster_known_nodes)" = "$REPLICAS" ]; do
       sleep 2
     done
 
@@ -89,24 +149,24 @@ data:
     for i in $(seq 0 $((NUM_MASTERS - 1))); do
       START=$((i * TOTAL_SLOTS / NUM_MASTERS))
       END=$(((i + 1) * TOTAL_SLOTS / NUM_MASTERS - 1))
-      MASTER_HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.${CLUSTER_DOMAIN}.local"
+      MASTER_HOST="$(pod_fqdn "${SERVICE}-${i}")"
       echo "Master $i: slots $START-$END"
-      $REDISCLI -h "$MASTER_HOST" -p 6379 CLUSTER ADDSLOTS $(seq "$START" "$END")
+      rcli -h "$MASTER_HOST" -p 6379 CLUSTER ADDSLOTSRANGE "$START" "$END" >/dev/null
     done
 
     echo "Waiting for slot assignment to propagate..."
-    until [ "$($REDISCLI -h "$TARGET_HOST" -p 6379 cluster info | awk -F: '/cluster_slots_assigned:/{print $2}' | tr -d '[:space:]')" = "16384" ]; do
+    until [ "$(info_field "$(rcli -h "$TARGET_HOST" -p 6379 cluster info)" cluster_slots_assigned)" = "16384" ]; do
       sleep 2
     done
 
     echo "Configuring replicas..."
     for i in $(seq 0 $((NUM_MASTERS - 1))); do
       REPLICA_INDEX=$((NUM_MASTERS + i))
-      MASTER_HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.${CLUSTER_DOMAIN}.local"
-      REPLICA_HOST="${SERVICE}-${REPLICA_INDEX}.${SERVICE}.${NAMESPACE}.svc.${CLUSTER_DOMAIN}.local"
-      MASTER_ID=$($REDISCLI -h "$MASTER_HOST" -p 6379 CLUSTER MYID)
+      MASTER_HOST="$(pod_fqdn "${SERVICE}-${i}")"
+      REPLICA_HOST="$(pod_fqdn "${SERVICE}-${REPLICA_INDEX}")"
+      MASTER_ID=$(rcli -h "$MASTER_HOST" -p 6379 CLUSTER MYID)
       echo "Replica $REPLICA_INDEX -> Master $i ($MASTER_ID)"
-      $REDISCLI -h "$REPLICA_HOST" -p 6379 CLUSTER REPLICATE "$MASTER_ID"
+      rcli -h "$REPLICA_HOST" -p 6379 CLUSTER REPLICATE "$MASTER_ID" >/dev/null
     done
 
     if [ "$MODE" = "init" ]; then
@@ -124,10 +184,10 @@ data:
     CLUSTER_DOMAIN={{ .Values.clusterDomain }}
     REDISCLI="{{ include "redis-cluster.redisCli" . }}"
     POD_NAME=$(hostname)
+    . /scripts/lib.sh
 
     cp /etc/redis/redis.conf /data/redis.conf
-    echo "cluster-announce-ip ${POD_IP}" >> /data/redis.conf
-    echo "cluster-announce-hostname ${POD_NAME}.${SERVICE}" >> /data/redis.conf
+    announce_config >> /data/redis.conf
     {{- include "redis-cluster.appendAuthConf" . | nindent 4 }}
 
     # The cluster bus only connects to peers by IP, and nodes.conf records the
@@ -136,9 +196,7 @@ data:
     # reach any other. Re-introduce each peer by its current IP; the MEET
     # handshake matches the existing node ID and updates its address.
     rejoin_cluster() {
-      until $REDISCLI -h 127.0.0.1 -p 6379 ping 2>/dev/null | grep -q PONG; do
-        sleep 1
-      done
+      wait_for_local_redis
 
       PENDING=""
       for i in $(seq 0 $((REPLICAS - 1))); do
@@ -148,11 +206,11 @@ data:
       while [ -n "$PENDING" ]; do
         REMAINING=""
         for i in $PENDING; do
-          HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.${CLUSTER_DOMAIN}.local"
+          HOST="$(pod_fqdn "${SERVICE}-${i}")"
           IP=$(getent hosts "$HOST" | awk '{print $1; exit}')
-          if [ -n "$IP" ] && $REDISCLI -h "$HOST" -p 6379 ping 2>/dev/null | grep -q PONG; then
-            echo "Rejoining $HOST at $IP"
-            $REDISCLI -h 127.0.0.1 -p 6379 CLUSTER MEET "$IP" 6379 >/dev/null
+          if [ -n "$IP" ] && rcli -h "$HOST" -p 6379 ping 2>/dev/null | grep -q PONG \
+             && rcli -h 127.0.0.1 -p 6379 CLUSTER MEET "$IP" 6379 >/dev/null; then
+            echo "Rejoined $HOST at $IP"
           else
             REMAINING="$REMAINING $i"
           fi
@@ -162,17 +220,175 @@ data:
       done
     }
 
-    # Only rejoin if this node already belonged to a cluster. On a fresh
-    # install, creation is left to the bootstrap so the two don't race.
+    # A node that starts with no peers is either part of a fresh install
+    # (the bootstrap introduces it) or replaces a node whose disk was lost
+    # while the rest of the cluster kept running. In the second case nothing
+    # else will ever introduce it, so MEET a peer that already serves slots.
+    introduce_to_cluster() {
+      wait_for_local_redis
+      while :; do
+        INFO=$(rcli -h 127.0.0.1 -p 6379 cluster info 2>/dev/null) || INFO=""
+        KNOWN=$(info_field "$INFO" cluster_known_nodes)
+        [ "${KNOWN:-1}" -le 1 ] || return 0
+        for i in $(seq 0 $((REPLICAS - 1))); do
+          [ "${SERVICE}-${i}" != "$POD_NAME" ] || continue
+          HOST="$(pod_fqdn "${SERVICE}-${i}")"
+          PEER_INFO=$(rcli -h "$HOST" -p 6379 cluster info 2>/dev/null) || continue
+          [ "$(info_field "$PEER_INFO" cluster_slots_assigned)" -gt 0 ] 2>/dev/null || continue
+          IP=$(getent hosts "$HOST" | awk '{print $1; exit}')
+          if [ -n "$IP" ] && rcli -h 127.0.0.1 -p 6379 CLUSTER MEET "$IP" 6379 >/dev/null; then
+            echo "Peers already form a cluster; joined it through $HOST at $IP"
+            return 0
+          fi
+        done
+        sleep 2
+      done
+    }
+
+    # Once introduced, an empty node is a master without slots, which this
+    # chart never uses. Turn it into a replica of the master with the fewest
+    # healthy replicas (the one that lost its replica, or the replica that
+    # took over from this pod's previous identity), and remove the dead node
+    # ID that this pod used before its disk was lost from every node.
+    adopt_role() {
+      wait_for_local_redis
+      MY_ID=""
+      until [ -n "$MY_ID" ]; do
+        MY_ID=$(rcli -h 127.0.0.1 -p 6379 CLUSTER MYID 2>/dev/null) || sleep 1
+      done
+      MY_FQDN="$(pod_fqdn "$POD_NAME")"
+      # Hostname announced by earlier chart versions.
+      MY_SHORT="${POD_NAME}.${SERVICE}"
+      STABLE=0
+      while :; do
+        sleep 2
+        NODES=$(rcli -h 127.0.0.1 -p 6379 CLUSTER NODES 2>/dev/null) || continue
+        # Nothing to do unless this node is a master that serves no slots.
+        printf '%s\n' "$NODES" | awk '$3 ~ /myself/ && $3 ~ /master/ && NF < 9 {f = 1} END {exit !f}' || return 0
+        INFO=$(rcli -h 127.0.0.1 -p 6379 cluster info 2>/dev/null) || continue
+        if [ "$(info_field "$INFO" cluster_slots_assigned)" != 16384 ]; then
+          STABLE=0
+          continue
+        fi
+        # Earlier identities of this pod, as "<id> <flags>", one line per
+        # peer that knows them. Only peers know their hostnames: hostnames
+        # are not gossiped, so this node's own view lacks them.
+        PEER_NODES=$(for i in $(seq 0 $((REPLICAS - 1))); do
+          [ "${SERVICE}-${i}" != "$POD_NAME" ] || continue
+          rcli -h "$(pod_fqdn "${SERVICE}-${i}")" -p 6379 CLUSTER NODES 2>/dev/null || true
+        done)
+        OLD=$(printf '%s\n' "$PEER_NODES" | awk -v me="$MY_ID" -v h1="$MY_FQDN" -v h2="$MY_SHORT" '
+          $1 != me { split($2, a, ","); if (a[2] == h1 || a[2] == h2) print $1, $3 }')
+        # Wait until the cluster has marked them failed, so their slots
+        # (if any) have failed over before picking a master to follow.
+        if printf '%s\n' "$OLD" | awk 'NF && $2 !~ /(^|,)fail(,|$)/ {f = 1} END {exit !f}'; then
+          echo "Waiting for the cluster to mark this pod's previous node ID as failed"
+          STABLE=0
+          continue
+        fi
+        TARGET=$(printf '%s\n' "$NODES" | awk '
+          $3 ~ /master/ && $3 !~ /fail/ && NF >= 9 { m[$1] = 0 }
+          $3 ~ /slave/ && $3 !~ /fail/ && $4 != "-" { r[$4]++ }
+          END {
+            for (id in m) {
+              n = (id in r) ? r[id] : 0
+              if (best == "" || n < bn) { best = id; bn = n }
+            }
+            print best
+          }')
+        if [ -z "$TARGET" ]; then
+          STABLE=0
+          continue
+        fi
+        # During a fresh install the bootstrap assigns replicas right after
+        # the slots. Give it time so the two never compete.
+        STABLE=$((STABLE + 2))
+        [ "$STABLE" -ge 16 ] || continue
+
+        echo "Empty node in an existing cluster: replicating $TARGET"
+        rcli -h 127.0.0.1 -p 6379 CLUSTER REPLICATE "$TARGET" >/dev/null || continue
+
+        # Every node must forget a dead ID within 60 s of the first FORGET,
+        # or gossip from the others adds it back.
+        OLD_IDS=$(printf '%s\n' "$OLD" | awk 'NF {print $1}' | sort -u)
+        if [ -n "$OLD_IDS" ]; then
+          for i in $(seq 0 $((REPLICAS - 1))); do
+            HOST="$(pod_fqdn "${SERVICE}-${i}")"
+            [ "${SERVICE}-${i}" != "$POD_NAME" ] || HOST=127.0.0.1
+            for id in $OLD_IDS; do
+              rcli -h "$HOST" -p 6379 CLUSTER FORGET "$id" >/dev/null \
+                && echo "Forgot old node ID $id on $HOST" \
+                || echo "WARNING: could not forget $id on $HOST"
+            done
+          done
+        fi
+        return 0
+      done
+    }
+
     if [ -f /data/nodes.conf ] && [ "$(grep -cv '^vars' /data/nodes.conf)" -gt 1 ]; then
       rejoin_cluster &
+    else
+      introduce_to_cluster &
     fi
+    adopt_role &
 
 {{- if and .Values.tls.enabled .Values.tls.reload.enabled }}
     sh /scripts/tls-reload.sh &
 {{- end }}
 
     exec redis-server /data/redis.conf
+  # preStop hook: hand a master's slots to one of its replicas before Redis
+  # shuts down, so planned restarts and drains don't wait for the
+  # cluster-node-timeout and a failover election.
+  prestop.sh: |
+    #!/bin/sh
+    SERVICE={{ include "redis-cluster.fullname" . }}
+    NAMESPACE={{ .Release.Namespace }}
+    CLUSTER_DOMAIN={{ .Values.clusterDomain }}
+    REDISCLI="{{ include "redis-cluster.redisCli" . }}"
+    . /scripts/lib.sh
+
+    # Hook output is not logged; send it to the container log instead.
+    if [ -w /proc/1/fd/1 ]; then
+      exec >/proc/1/fd/1 2>&1
+    fi
+
+    # Leave time for Redis to shut down within terminationGracePeriodSeconds:
+    # 10 s, or half of it when it is 20 s or less.
+    {{- $grace := int .Values.terminationGracePeriodSeconds }}
+    DEADLINE=$(($(date +%s) + {{ ternary (sub $grace 10) (div $grace 2) (gt $grace 20) }}))
+
+    NODES=$(rcli -h 127.0.0.1 -p 6379 CLUSTER NODES) || exit 0
+    MYSELF=$(printf '%s\n' "$NODES" | awk '$3 ~ /myself/')
+    if ! printf '%s\n' "$MYSELF" | awk '$3 ~ /master/ && NF >= 9 {f = 1} END {exit !f}'; then
+      exit 0
+    fi
+    MY_ID=$(printf '%s\n' "$MYSELF" | awk '{print $1}')
+
+    # Connected, healthy replicas of this master, by hostname (for TLS
+    # verification) or IP.
+    TARGETS=$(printf '%s\n' "$NODES" | awk -v me="$MY_ID" '
+      $4 == me && $3 ~ /slave/ && $3 !~ /fail/ && $8 == "connected" {
+        split($2, a, ","); split(a[1], b, ":"); print (a[2] != "" ? a[2] : b[1])
+      }')
+
+    for HOST in $TARGETS; do
+      [ "$(date +%s)" -lt "$DEADLINE" ] || break
+      echo "preStop: this node is a master; handing over to replica $HOST"
+      rcli -h "$HOST" -p 6379 CLUSTER FAILOVER >/dev/null || continue
+      # A manual failover times out after 5 s inside Redis.
+      UNTIL=$(($(date +%s) + 10))
+      [ "$UNTIL" -le "$DEADLINE" ] || UNTIL=$DEADLINE
+      while [ "$(date +%s)" -lt "$UNTIL" ]; do
+        if [ "$(rcli -h 127.0.0.1 -p 6379 ROLE 2>/dev/null | head -n 1)" = "slave" ]; then
+          echo "preStop: handover to $HOST complete"
+          exit 0
+        fi
+        sleep 0.5
+      done
+    done
+    echo "preStop: no replica took over; shutting down as master"
 {{- if and .Values.tls.enabled .Values.tls.reload.enabled }}
   tls-reload.sh: |
     #!/bin/sh
