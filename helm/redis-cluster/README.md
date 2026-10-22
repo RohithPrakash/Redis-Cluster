@@ -10,7 +10,7 @@ A production-ready Helm chart for deploying an **n-node Redis Cluster** on Kuber
 
 - Kubernetes 1.25+
 - Helm 3.10+
-- A container image with `redis-server` and `redis-cli` (see the [`dockerfile`](../../dockerfile) in this repo)
+- A container image with `redis-server` and `redis-cli` (see the [`dockerfile`](../../dockerfile) in this repo, which pins Redis **7.2.16**; see [Redis version notes](#redis-version-notes))
 
 ---
 
@@ -19,8 +19,8 @@ A production-ready Helm chart for deploying an **n-node Redis Cluster** on Kuber
 ### 1. Build / load the image (local kind cluster)
 
 ```bash
-docker build -t redis-cluster:7.2 -f dockerfile .
-kind load docker-image redis-cluster:7.2
+docker build -t redis-cluster:7.2.16 -f dockerfile .
+kind load docker-image redis-cluster:7.2.16
 ```
 
 ### 2. Install the chart
@@ -127,9 +127,39 @@ dir /data
 cluster-preferred-endpoint-type hostname
 ```
 
+At startup, `start.sh` copies this file to `/data/redis.conf` and appends the per-pod settings:
+
+```conf
+cluster-announce-ip <pod IP, from the downward API>
+cluster-announce-hostname <pod name>.redis-cluster
+```
+
 ### Why `cluster-preferred-endpoint-type hostname`?
 
-In Kubernetes, pod IPs are **ephemeral**. If a pod restarts, it gets a new IP. Redis normally stores peer IPs in `nodes.conf`, which would break the cluster after a restart. By setting `cluster-preferred-endpoint-type hostname` and dynamically injecting `cluster-announce-ip` / `cluster-announce-hostname` at startup, each node advertises its **stable DNS name** instead of its ephemeral IP. This makes the cluster resilient to pod rescheduling.
+In Kubernetes, pod IPs are **ephemeral**. By setting `cluster-preferred-endpoint-type hostname` and injecting `cluster-announce-hostname` at startup, each node advertises its **stable DNS name** to clients (in `CLUSTER SLOTS`, `CLUSTER SHARDS` and `MOVED` redirects) instead of its ephemeral IP.
+
+This only affects what clients see. Redis nodes still talk to each other over the cluster bus by **IP**, so `cluster-announce-ip` is set to the pod IP and `nodes.conf` records peers by IP.
+
+### Recovering from pod IP changes
+
+When a single pod restarts, it still knows its peers' IPs. It reconnects to them and announces its new IP. When **all** pods are recreated at once (for example, scaling the StatefulSet to 0 and back), every IP in every `nodes.conf` is stale and no node can reach any other.
+
+To handle this, the main container runs [`start.sh`](templates/scripts-configmap.yaml). When the node already belongs to a cluster, the script resolves each peer's stable DNS name in the background and sends `CLUSTER MEET <current-ip>`. The MEET handshake matches the peer's existing node ID and updates its address, so the cluster re-forms with its original slots and data. On a fresh install, `nodes.conf` has no peers and this step is skipped, leaving cluster creation to the bootstrap.
+
+### Redis version notes
+
+The image pins **Redis 7.2.16**. Earlier versions of this chart set `cluster-announce-ip` to the pod's DNS name, and Redis 7.2 patch releases treat that value differently:
+
+| | Redis 7.2.11 | Redis 7.2.16 |
+|---|---|---|
+| `cluster-announce-ip <hostname>` | Accepted without validation. The hostname is stored as the node's "IP" and resolved when peers connect, so the cluster worked by accident. | Rejected at startup with `FATAL CONFIG FILE ERROR ... Cluster announce IP must be a valid IPv4 or IPv6 address`. Pods crash-loop and the cluster never forms. |
+| `cluster-announce-ip <pod IP>` (current chart) | Works | Works |
+
+AlmaLinux 7.2.14 also rejects a hostname. 7.2.12 and 7.2.13 are not in the AlmaLinux repositories and were not tested.
+
+The current chart always announces the pod IP and handles IP changes with the rejoin step above, so it works on both versions. Recovery from a full scale-down and scale-up was verified on 7.2.16 and 7.2.11.
+
+The version is pinned because the dockerfile previously installed whatever `redis` the AlmaLinux `redis:7` stream offered. When the stream moved from 7.2.11 to newer releases, rebuilding the same dockerfile silently produced an image that broke the old chart. To move to a newer 7.2 release, change `redis-7.2.16` in the dockerfile and re-run a full scale-down and scale-up test before relying on it.
 
 ---
 
@@ -182,7 +212,7 @@ The Job runs a single pod that:
 |-----------|---------|-------------|
 | `redisCluster.replicas` | `6` | Total nodes (must be even and ≥ 6 for `--cluster-replicas 1`) |
 | `image.repository` | `redis-cluster` | Container image repository |
-| `image.tag` | `7.2` | Container image tag |
+| `image.tag` | `7.2.16` | Container image tag |
 | `image.pullPolicy` | `IfNotPresent` | Image pull policy |
 | `persistence.enabled` | `true` | Enable PVC per pod |
 | `persistence.size` | `100Mi` | PVC size per pod |
@@ -358,6 +388,7 @@ When enabled, the chart automatically injects the password into:
 - `redis.conf` (`requirepass` and `masterauth`)
 - Liveness/readiness probes
 - Bootstrap script (initContainer and Job)
+- Start script (peer rejoin after restarts)
 - Helm test pod
 
 ### ServiceAccount Token Automount
@@ -391,6 +422,22 @@ Or, if using the Job:
 ```bash
 kubectl logs -l app.kubernetes.io/name=redis-cluster -l app.kubernetes.io/component=bootstrap
 ```
+
+### Pods crash-loop with `Cluster announce IP must be a valid IPv4 or IPv6 address`
+
+The image runs Redis 7.2.14 or later with an older version of this chart that set `cluster-announce-ip` to a hostname. Upgrade to the current chart, which sets it to the pod IP. See [Redis version notes](#redis-version-notes).
+
+### Cluster down after all pods restart
+
+After a full restart (for example, scaling to 0 and back), each node re-introduces its peers by their current IPs. Check that this happened:
+
+```bash
+kubectl logs redis-cluster-1 -c redis | grep Rejoining
+```
+
+You should see one `Rejoining ...` line per peer. A node logs nothing until that peer answers `PING`, so a missing line points to a peer that is not up or not resolvable in DNS.
+
+After a full restart, `cluster_state:ok` (and pod readiness) can briefly report healthy before the 15s `cluster-node-timeout` expires, because nodes have not yet noticed their peers are gone. Check `redis-cli cluster nodes` for `fail` or `fail?` flags rather than relying on the first readiness result.
 
 ---
 

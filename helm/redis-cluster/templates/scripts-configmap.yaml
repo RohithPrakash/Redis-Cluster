@@ -17,11 +17,7 @@ data:
 {{- if .Values.auth.enabled }}
     REDIS_PASSWORD="{{ .Values.auth.password }}"
 {{- end }}
-{{- if .Values.tls.enabled }}
-    REDISCLI="redis-cli {{- if .Values.auth.enabled }} -a $REDIS_PASSWORD{{- end }} --tls --cacert /etc/redis/tls/{{ .Values.tls.caFilename }}{{ if ne .Values.tls.authClients "no" }} --cert /etc/redis/tls/{{ .Values.tls.certFilename }} --key /etc/redis/tls/{{ .Values.tls.keyFilename }}{{ end }}"
-{{- else }}
-    REDISCLI="redis-cli {{- if .Values.auth.enabled }} -a $REDIS_PASSWORD{{- end }}"
-{{- end }}
+    REDISCLI="{{ include "redis-cluster.redisCli" . }}"
 
     if [ "$((REPLICAS % 2))" -ne 0 ]; then
       echo "ERROR: redisCluster.replicas must be an even number (n/2 masters, n/2 replicas)."
@@ -120,3 +116,57 @@ data:
     else
       echo "Redis Cluster created successfully via Job."
     fi
+  start.sh: |
+    #!/bin/sh
+    set -e
+
+    REPLICAS={{ .Values.redisCluster.replicas }}
+    SERVICE={{ include "redis-cluster.fullname" . }}
+    NAMESPACE={{ .Release.Namespace }}
+    CLUSTER_DOMAIN={{ .Values.clusterDomain }}
+    REDISCLI="{{ include "redis-cluster.redisCli" . }}"
+    POD_NAME=$(hostname)
+
+    cp /etc/redis/redis.conf /data/redis.conf
+    echo "cluster-announce-ip ${POD_IP}" >> /data/redis.conf
+    echo "cluster-announce-hostname ${POD_NAME}.${SERVICE}" >> /data/redis.conf
+
+    # The cluster bus only connects to peers by IP, and nodes.conf records the
+    # IPs peers had when it was last written. When all pods are recreated
+    # (e.g. scaled to 0 and back) every recorded IP is stale and no node can
+    # reach any other. Re-introduce each peer by its current IP; the MEET
+    # handshake matches the existing node ID and updates its address.
+    rejoin_cluster() {
+      until $REDISCLI -h 127.0.0.1 -p 6379 ping 2>/dev/null | grep -q PONG; do
+        sleep 1
+      done
+
+      PENDING=""
+      for i in $(seq 0 $((REPLICAS - 1))); do
+        [ "${SERVICE}-${i}" = "$POD_NAME" ] || PENDING="$PENDING $i"
+      done
+
+      while [ -n "$PENDING" ]; do
+        REMAINING=""
+        for i in $PENDING; do
+          HOST="${SERVICE}-${i}.${SERVICE}.${NAMESPACE}.svc.${CLUSTER_DOMAIN}.local"
+          IP=$(getent hosts "$HOST" | awk '{print $1; exit}')
+          if [ -n "$IP" ] && $REDISCLI -h "$HOST" -p 6379 ping 2>/dev/null | grep -q PONG; then
+            echo "Rejoining $HOST at $IP"
+            $REDISCLI -h 127.0.0.1 -p 6379 CLUSTER MEET "$IP" 6379 >/dev/null
+          else
+            REMAINING="$REMAINING $i"
+          fi
+        done
+        PENDING=$REMAINING
+        [ -z "$PENDING" ] || sleep 2
+      done
+    }
+
+    # Only rejoin if this node already belonged to a cluster. On a fresh
+    # install, creation is left to the bootstrap so the two don't race.
+    if [ -f /data/nodes.conf ] && [ "$(grep -cv '^vars' /data/nodes.conf)" -gt 1 ]; then
+      rejoin_cluster &
+    fi
+
+    exec redis-server /data/redis.conf

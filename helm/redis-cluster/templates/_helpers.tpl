@@ -52,6 +52,18 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
+redis-cli invocation with auth and TLS flags, for use in shell scripts.
+Expects $REDIS_PASSWORD to be set in the environment when auth is enabled.
+*/}}
+{{- define "redis-cluster.redisCli" -}}
+{{- if .Values.tls.enabled -}}
+redis-cli {{- if .Values.auth.enabled }} -a $REDIS_PASSWORD{{- end }} --tls --cacert /etc/redis/tls/{{ .Values.tls.caFilename }}{{ if ne .Values.tls.authClients "no" }} --cert /etc/redis/tls/{{ .Values.tls.certFilename }} --key /etc/redis/tls/{{ .Values.tls.keyFilename }}{{ end }}
+{{- else -}}
+redis-cli {{- if .Values.auth.enabled }} -a $REDIS_PASSWORD{{- end }}
+{{- end -}}
+{{- end }}
+
+{{/*
 Create the name of the service account to use
 */}}
 {{- define "redis-cluster.serviceAccountName" -}}

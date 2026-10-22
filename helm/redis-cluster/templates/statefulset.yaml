@@ -68,19 +68,16 @@ spec:
         - name: redis
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-{{- if .Values.auth.enabled }}
           env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+{{- if .Values.auth.enabled }}
             - name: REDIS_PASSWORD
               value: "{{ .Values.auth.password }}"
 {{- end }}
-          command:
-            - /bin/sh
-            - -c
-            - |
-              cp /etc/redis/redis.conf /data/redis.conf
-              echo "cluster-announce-ip $(hostname).{{ include "redis-cluster.fullname" . }}" >> /data/redis.conf
-              echo "cluster-announce-hostname $(hostname).{{ include "redis-cluster.fullname" . }}" >> /data/redis.conf
-              exec redis-server /data/redis.conf
+          command: ["/bin/sh", "/scripts/start.sh"]
           ports:
             - name: redis-client
               containerPort: 6379
@@ -127,6 +124,9 @@ spec:
               mountPath: /data
             - name: redis-config
               mountPath: /etc/redis
+              readOnly: true
+            - name: redis-scripts
+              mountPath: /scripts
               readOnly: true
             - name: tmp
               mountPath: /tmp

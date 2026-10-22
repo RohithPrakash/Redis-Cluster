@@ -2,9 +2,11 @@
 
 FROM almalinux:9
 
-# Install Redis 7.2 from AlmaLinux AppStream and ensure redis user has UID/GID 999
+# Install Redis 7.2.16 from AlmaLinux AppStream and ensure redis user has UID/GID 999.
+# The version is pinned: patch releases of 7.2 changed how cluster-announce-ip
+# is validated (see helm/redis-cluster/README.md, "Redis version notes").
 RUN dnf module enable -y redis:7 && \
-    dnf install -y redis && \
+    dnf install -y redis-7.2.16 && \
     dnf clean all && \
     rm -rf /var/cache/dnf /tmp/* && \
     (getent group 999 >/dev/null 2>&1 && groupmod -g 1999 $(getent group 999 | cut -d: -f1) || true) && \
