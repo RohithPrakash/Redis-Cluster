@@ -55,8 +55,15 @@ securityContext:
 
 persistence:
   enabled: true
-  size: 100Mi
+  # Must be at least 3x redisConfig.maxmemory: the RDB snapshot, the AOF base,
+  # the AOF increments and the new base written during a rewrite all share
+  # this volume. When it fills, Redis rejects every write (even DEL) and cannot
+  # recover by itself. See README "Disk sizing".
+  size: 512Mi
   storageClass: standard
+  # Fail the install/upgrade when size is below 3x redisConfig.maxmemory.
+  # Only disable this for existing releases whose PVCs cannot be resized yet.
+  validateSize: true
 
 resources:
   limits:
@@ -96,6 +103,23 @@ auth:
 # Redis configuration directives.
 redisConfig:
   maxmemory: "96mb"
+  # What Redis does when maxmemory is reached.
+  # - noeviction: reject writes with an OOM error; no stored key is ever dropped.
+  # - allkeys-lru / allkeys-lfu / volatile-* / allkeys-random: evict keys to
+  #   make room. This turns the cluster into a cache: acknowledged writes are
+  #   silently deleted and clients see no error. Only use it for cache data.
+  maxmemoryPolicy: noeviction
+  # A master rejects writes (NOREPLICAS) unless at least this many replicas
+  # acknowledged replication within minReplicasMaxLag seconds. This bounds how
+  # long a master cut off from the cluster keeps accepting writes that will be
+  # lost on failover. 0 disables the check; the maximum is 1 (one replica per
+  # master). With 1, a shard also rejects writes while its replica is down or
+  # restarting. See README "Write safety".
+  minReplicasToWrite: 1
+  minReplicasMaxLag: 10
+  # Milliseconds a node may be unreachable before it is considered failed.
+  # Lower values fail over faster but react to short network blips.
+  clusterNodeTimeout: 15000
 
 # TLS configuration for encrypted client connections.
 # The AlmaLinux 9 Redis package is compiled with OpenSSL TLS support.

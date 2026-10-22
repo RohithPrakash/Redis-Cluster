@@ -1,4 +1,41 @@
 # SPDX-License-Identifier: Apache-2.0
+{{- $rc := .Values.redisConfig }}
+{{- $policies := list "noeviction" "allkeys-lru" "allkeys-lfu" "allkeys-random" "volatile-lru" "volatile-lfu" "volatile-random" "volatile-ttl" }}
+{{- if not (has $rc.maxmemoryPolicy $policies) }}
+{{- fail (printf "redisConfig.maxmemoryPolicy %q is not one of: %s" (toString $rc.maxmemoryPolicy) (join ", " $policies)) }}
+{{- end }}
+{{- /* The bootstrap gives each master exactly one replica. */}}
+{{- if or (lt (int $rc.minReplicasToWrite) 0) (gt (int $rc.minReplicasToWrite) 1) }}
+{{- fail "redisConfig.minReplicasToWrite must be 0 or 1: the chart creates one replica per master, so a higher value rejects every write" }}
+{{- end }}
+
+{{- /*
+Disk sizing check: a full disk blocks all writes. The PVC must hold the RDB snapshot, the
+AOF base, the AOF increments and the new base written during a rewrite: about
+3x maxmemory. Redis units: k/m/g = 1000^n, kb/mb/gb = 1024^n.
+*/}}
+{{- if and .Values.persistence.enabled .Values.persistence.validateSize }}
+{{- $mm := $rc.maxmemory }}
+{{- if or (kindIs "float64" $mm) (kindIs "int64" $mm) (kindIs "int" $mm) }}
+{{- $mm = int64 $mm | toString }}
+{{- end }}
+{{- $mm = lower (trim (toString $mm)) }}
+{{- if not (regexMatch "^[0-9]+(k|kb|m|mb|g|gb)?$" $mm) }}
+{{- fail (printf "redisConfig.maxmemory %q is not a Redis memory value such as 96mb or 2gb" $mm) }}
+{{- end }}
+{{- $redisUnits := dict "" 1.0 "k" 1e3 "kb" 1024.0 "m" 1e6 "mb" 1048576.0 "g" 1e9 "gb" 1073741824.0 }}
+{{- $mmBytes := mulf (float64 (regexFind "^[0-9]+" $mm)) (get $redisUnits (regexFind "[a-z]*$" $mm)) }}
+{{- $size := trim (toString .Values.persistence.size) }}
+{{- if not (regexMatch "^[0-9]+(\\.[0-9]+)?(Ki|Mi|Gi|Ti|Pi|k|M|G|T|P)?$" $size) }}
+{{- fail (printf "persistence.size %q is not a quantity such as 512Mi or 2Gi" $size) }}
+{{- end }}
+{{- $kubeUnits := dict "" 1.0 "k" 1e3 "M" 1e6 "G" 1e9 "T" 1e12 "P" 1e15 "Ki" 1024.0 "Mi" 1048576.0 "Gi" 1073741824.0 "Ti" 1099511627776.0 "Pi" 1125899906842624.0 }}
+{{- $sizeBytes := mulf (float64 (regexFind "^[0-9.]+" $size)) (get $kubeUnits (regexFind "[A-Za-z]*$" $size)) }}
+{{- $minBytes := mulf 3 $mmBytes }}
+{{- if and (gt $mmBytes 0.0) (lt $sizeBytes $minBytes) }}
+{{- fail (printf "persistence.size %s is too small for redisConfig.maxmemory %s: Redis needs about 3x maxmemory on disk (at least %dMi), or it stops accepting writes when the disk fills. Raise persistence.size, lower redisConfig.maxmemory, or set persistence.validateSize=false. See the chart README, section \"Disk sizing\"." $size $mm (int64 (ceil (divf $minBytes 1048576.0)))) }}
+{{- end }}
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -8,13 +45,15 @@ metadata:
 data:
   redis.conf: |
     cluster-enabled yes
-    cluster-node-timeout 15000
+    cluster-node-timeout {{ int64 $rc.clusterNodeTimeout }}
     cluster-require-full-coverage no
     appendonly yes
     protected-mode no
     bind 0.0.0.0
-    maxmemory-policy allkeys-lru
+    maxmemory-policy {{ $rc.maxmemoryPolicy }}
     maxmemory {{ .Values.redisConfig.maxmemory }}
+    min-replicas-to-write {{ int $rc.minReplicasToWrite }}
+    min-replicas-max-lag {{ int $rc.minReplicasMaxLag }}
     cluster-config-file /data/nodes.conf
     cluster-preferred-endpoint-type hostname
     dir /data
