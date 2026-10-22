@@ -63,10 +63,11 @@ data:
     stop-writes-on-bgsave-error yes
     rdbcompression yes
     rdbchecksum yes
-{{- if .Values.auth.enabled }}
-    requirepass {{ .Values.auth.password }}
-    masterauth {{ .Values.auth.password }}
-{{- end }}
+    # Plaintext local socket for the liveness probe and TLS reloads, so they
+    # keep working when the certificate has expired.
+    unixsocket /tmp/redis.sock
+    unixsocketperm 700
+    # requirepass/masterauth are appended from the auth Secret at startup.
 {{- if .Values.tls.enabled }}
     port 0
     tls-port 6379

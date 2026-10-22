@@ -41,10 +41,9 @@ spec:
           env:
             - name: BOOTSTRAP_ROLE
               value: "init"
-{{- if .Values.auth.enabled }}
-            - name: REDIS_PASSWORD
-              value: "{{ .Values.auth.password }}"
-{{- end }}
+            {{- if .Values.auth.enabled }}
+            {{- include "redis-cluster.authEnv" . | trim | nindent 12 }}
+            {{- end }}
           volumeMounts:
             - name: redis-config
               mountPath: /etc/redis
@@ -73,10 +72,9 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
-{{- if .Values.auth.enabled }}
-            - name: REDIS_PASSWORD
-              value: "{{ .Values.auth.password }}"
-{{- end }}
+            {{- if .Values.auth.enabled }}
+            {{- include "redis-cluster.authEnv" . | trim | nindent 12 }}
+            {{- end }}
           command: ["/bin/sh", "/scripts/start.sh"]
           ports:
             - name: redis-client
@@ -85,17 +83,18 @@ spec:
             - name: cluster-bus
               containerPort: 16379
               protocol: TCP
+          # Liveness uses the plaintext Unix socket so it does not depend on
+          # the TLS certificate being valid, and fails on any reply other than
+          # PONG (e.g. BUSY from a stuck script). LOADING is still alive.
           livenessProbe:
             exec:
               command:
                 - /bin/sh
                 - -c
                 - |
-{{- if .Values.tls.enabled }}
-                  redis-cli {{- if .Values.auth.enabled }} -a {{ .Values.auth.password }}{{- end }} --tls --cacert /etc/redis/tls/{{ .Values.tls.caFilename }}{{ if ne .Values.tls.authClients "no" }} --cert /etc/redis/tls/{{ .Values.tls.certFilename }} --key /etc/redis/tls/{{ .Values.tls.keyFilename }}{{ end }} ping
-{{- else }}
-                  redis-cli {{- if .Values.auth.enabled }} -a {{ .Values.auth.password }}{{- end }} ping
-{{- end }}
+                  OUT=$(redis-cli -s /tmp/redis.sock ping 2>&1)
+                  case "$OUT" in PONG|LOADING*|MASTERDOWN*) exit 0 ;; esac
+                  echo "$OUT"; exit 1
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 5
@@ -106,11 +105,7 @@ spec:
                 - /bin/sh
                 - -c
                 - |
-{{- if .Values.tls.enabled }}
-                  redis-cli {{- if .Values.auth.enabled }} -a {{ .Values.auth.password }}{{- end }} --tls --cacert /etc/redis/tls/{{ .Values.tls.caFilename }}{{ if ne .Values.tls.authClients "no" }} --cert /etc/redis/tls/{{ .Values.tls.certFilename }} --key /etc/redis/tls/{{ .Values.tls.keyFilename }}{{ end }} -h 127.0.0.1 -p 6379 cluster info | grep -q "cluster_state:ok"
-{{- else }}
-                  redis-cli {{- if .Values.auth.enabled }} -a {{ .Values.auth.password }}{{- end }} -h 127.0.0.1 -p 6379 cluster info | grep -q "cluster_state:ok"
-{{- end }}
+                  {{ include "redis-cluster.redisCli" . }} -h 127.0.0.1 -p 6379 cluster info | grep -q "cluster_state:ok"
             initialDelaySeconds: 5
             periodSeconds: 5
             timeoutSeconds: 3
@@ -187,7 +182,7 @@ spec:
 {{- if .Values.tls.enabled }}
         - name: redis-tls
           secret:
-            secretName: {{ default (printf "%s-tls" (include "redis-cluster.fullname" .)) .Values.tls.existingSecret }}
+            secretName: {{ include "redis-cluster.tlsSecretName" . }}
 {{- end }}
         {{- if not .Values.persistence.enabled }}
         - name: data

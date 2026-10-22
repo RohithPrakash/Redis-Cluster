@@ -91,13 +91,17 @@ networkPolicy:
     enabled: true
 
 # Redis authentication.
-# When enabled, all redis-cli calls (probes, bootstrap, tests) automatically
-# include the password. Set requirepass and masterauth in redis.conf.
+# The password is read from a Secret: auth.existingSecret, or a Secret the
+# chart creates from auth.password. Pods get it through secretKeyRef env vars;
+# it is written to requirepass/masterauth at startup and passed to redis-cli
+# via REDISCLI_AUTH, so it never appears in a ConfigMap or a command line.
 auth:
   enabled: false
+  # Used only when existingSecret is empty.
   password: ""
   # Name of an existing Secret containing the Redis password.
   existingSecret: ""
+  # Key of the password in existingSecret.
   existingSecretPasswordKey: "password"
 
 # Redis configuration directives.
@@ -145,6 +149,13 @@ tls:
     enabled: true
     size: 20480
     timeout: 300
+  # Reload the certificate in place when the mounted Secret changes (manual
+  # rotation or cert-manager renewal). Redis otherwise keeps serving the
+  # certificate it loaded at startup until the pod restarts. Kubelet takes up
+  # to about a minute to update the mounted files, plus intervalSeconds.
+  reload:
+    enabled: true
+    intervalSeconds: 30
   # Auto-generate certificates using cert-manager.
   certManager:
     enabled: false

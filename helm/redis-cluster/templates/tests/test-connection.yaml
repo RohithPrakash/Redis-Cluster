@@ -13,19 +13,23 @@ spec:
       image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
       imagePullPolicy: {{ .Values.image.pullPolicy }}
       command: ['redis-cli']
+{{- if .Values.auth.enabled }}
+      env:
+        {{- include "redis-cluster.authEnv" . | trim | nindent 8 }}
+{{- end }}
 {{- if .Values.tls.enabled }}
-      args: ['--tls', '--cacert', '/etc/redis/tls/{{ .Values.tls.caFilename }}'{{ if ne .Values.tls.authClients "no" }}, '--cert', '/etc/redis/tls/{{ .Values.tls.certFilename }}', '--key', '/etc/redis/tls/{{ .Values.tls.keyFilename }}'{{ end }}{{- if .Values.auth.enabled }}, '-a', '{{ .Values.auth.password }}'{{- end }}, '-h', '{{ include "redis-cluster.fullname" . }}-0.{{ include "redis-cluster.fullname" . }}.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }}.local', '-p', '6379', 'ping']
+      args: ['--tls', '--cacert', '/etc/redis/tls/{{ .Values.tls.caFilename }}'{{ if ne .Values.tls.authClients "no" }}, '--cert', '/etc/redis/tls/{{ .Values.tls.certFilename }}', '--key', '/etc/redis/tls/{{ .Values.tls.keyFilename }}'{{ end }}, '-h', '{{ include "redis-cluster.fullname" . }}-0.{{ include "redis-cluster.fullname" . }}.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }}.local', '-p', '6379', 'ping']
       volumeMounts:
         - name: redis-tls
           mountPath: /etc/redis/tls
           readOnly: true
 {{- else }}
-      args: ['-h', '{{ include "redis-cluster.fullname" . }}-0.{{ include "redis-cluster.fullname" . }}.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }}.local', '-p', '6379'{{- if .Values.auth.enabled }}, '-a', '{{ .Values.auth.password }}'{{- end }}, 'ping']
+      args: ['-h', '{{ include "redis-cluster.fullname" . }}-0.{{ include "redis-cluster.fullname" . }}.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }}.local', '-p', '6379', 'ping']
 {{- end }}
 {{- if .Values.tls.enabled }}
   volumes:
     - name: redis-tls
       secret:
-        secretName: {{ default (printf "%s-tls" (include "redis-cluster.fullname" .)) .Values.tls.existingSecret }}
+        secretName: {{ include "redis-cluster.tlsSecretName" . }}
 {{- end }}
   restartPolicy: Never

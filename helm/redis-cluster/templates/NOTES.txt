@@ -1,7 +1,7 @@
 Redis Cluster has been deployed.
 
 To check the cluster status, run:
-  kubectl exec -it {{ include "redis-cluster.fullname" . }}-0 -- redis-cli cluster info
+  kubectl exec -it {{ include "redis-cluster.fullname" . }}-0 -c redis -- redis-cli -s /tmp/redis.sock cluster info
 
 To list cluster nodes, run:
-  kubectl exec -it {{ include "redis-cluster.fullname" . }}-0 -- redis-cli cluster nodes
+  kubectl exec -it {{ include "redis-cluster.fullname" . }}-0 -c redis -- redis-cli -s /tmp/redis.sock cluster nodes

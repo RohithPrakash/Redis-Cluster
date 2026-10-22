@@ -14,9 +14,6 @@ data:
     SERVICE={{ include "redis-cluster.fullname" . }}
     NAMESPACE={{ .Release.Namespace }}
     CLUSTER_DOMAIN={{ .Values.clusterDomain }}
-{{- if .Values.auth.enabled }}
-    REDIS_PASSWORD="{{ .Values.auth.password }}"
-{{- end }}
     REDISCLI="{{ include "redis-cluster.redisCli" . }}"
 
     if [ "$((REPLICAS % 2))" -ne 0 ]; then
@@ -35,6 +32,7 @@ data:
       TARGET_HOST="127.0.0.1"
 
       cp /etc/redis/redis.conf /data/redis.conf
+      {{- include "redis-cluster.appendAuthConf" . | nindent 6 }}
       redis-server /data/redis.conf &
       REDIS_PID=$!
 
@@ -130,6 +128,7 @@ data:
     cp /etc/redis/redis.conf /data/redis.conf
     echo "cluster-announce-ip ${POD_IP}" >> /data/redis.conf
     echo "cluster-announce-hostname ${POD_NAME}.${SERVICE}" >> /data/redis.conf
+    {{- include "redis-cluster.appendAuthConf" . | nindent 4 }}
 
     # The cluster bus only connects to peers by IP, and nodes.conf records the
     # IPs peers had when it was last written. When all pods are recreated
@@ -169,4 +168,36 @@ data:
       rejoin_cluster &
     fi
 
+{{- if and .Values.tls.enabled .Values.tls.reload.enabled }}
+    sh /scripts/tls-reload.sh &
+{{- end }}
+
     exec redis-server /data/redis.conf
+{{- if and .Values.tls.enabled .Values.tls.reload.enabled }}
+  tls-reload.sh: |
+    #!/bin/sh
+    # Redis reads its certificate only at startup, so a renewed Secret (e.g.
+    # from cert-manager) is not served until a restart. Watch the mounted
+    # files and reload them in place: CONFIG SET of the TLS file settings
+    # re-reads the files even when the paths are unchanged. This goes over
+    # the Unix socket, which works even after the old certificate expired.
+    DIR=/etc/redis/tls
+    CERT=$DIR/{{ .Values.tls.certFilename }}
+    KEY=$DIR/{{ .Values.tls.keyFilename }}
+    CA=$DIR/{{ .Values.tls.caFilename }}
+
+    checksum() { cat "$CERT" "$KEY" "$CA" 2>/dev/null | sha256sum; }
+
+    LOADED=$(checksum)
+    while sleep {{ .Values.tls.reload.intervalSeconds }}; do
+      CURRENT=$(checksum)
+      [ "$CURRENT" != "$LOADED" ] || continue
+      OUT=$(redis-cli -s /tmp/redis.sock CONFIG SET tls-cert-file "$CERT" tls-key-file "$KEY" tls-ca-cert-file "$CA" 2>&1)
+      if [ "$OUT" = "OK" ]; then
+        echo "TLS certificate files changed; reloaded."
+        LOADED=$CURRENT
+      else
+        echo "TLS certificate reload failed, will retry: $OUT"
+      fi
+    done
+{{- end }}

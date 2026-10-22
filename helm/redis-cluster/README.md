@@ -337,7 +337,11 @@ The Job runs a single pod that:
 | `tls.authClients` | `no` | Client certificate auth: `no`, `optional`, or `yes` |
 | `clusterDomain` | `cluster` | Kubernetes cluster domain suffix (`svc.<domain>.local`) |
 | `auth.enabled` | `false` | Enable Redis password authentication |
-| `auth.password` | `""` | Redis password (also used for `masterauth`) |
+| `auth.password` | `""` | Redis password (also used for `masterauth`); stored in a chart-managed Secret |
+| `auth.existingSecret` | `""` | Existing Secret with the password; overrides `auth.password` |
+| `auth.existingSecretPasswordKey` | `password` | Key of the password in `auth.existingSecret` |
+| `tls.reload.enabled` | `true` | Reload the certificate in place when the TLS Secret changes |
+| `tls.reload.intervalSeconds` | `30` | How often to check the mounted certificate files |
 | `redisConfig.maxmemory` | `"96mb"` | Redis `maxmemory` directive |
 | `redisConfig.maxmemoryPolicy` | `noeviction` | What happens at `maxmemory`; any other policy silently drops keys ([Memory limit and eviction](#memory-limit-and-eviction)) |
 | `redisConfig.minReplicasToWrite` | `1` | Reject writes on a master without a connected replica (`0` or `1`) ([Write safety](#write-safety-during-a-network-partition)) |
@@ -372,8 +376,8 @@ These IDs match the `redis` user created inside the container image.
 
 ## Probes
 
-- **LivenessProbe** - `redis-cli ping` (restarts the container if Redis is unresponsive)
-- **ReadinessProbe** - Checks `cluster_state:ok` via `redis-cli cluster info` (removes the pod from Service endpoints until it has fully joined the cluster)
+- **LivenessProbe** - `redis-cli ping` over a local Unix socket (`/tmp/redis.sock`). It restarts the container unless the reply is `PONG` (or `LOADING` while the dataset loads), so a node stuck on `BUSY` is restarted. The socket is plaintext, so liveness does not depend on the TLS certificate: an expired certificate does not restart every pod at once.
+- **ReadinessProbe** - Checks `cluster_state:ok` via `redis-cli cluster info` on the client port, over TLS when enabled (marks the pod not ready until it has fully joined the cluster, or while its certificate does not verify)
 
 ---
 
@@ -415,6 +419,19 @@ helm install redis-cluster helm/redis-cluster/ \
 The generated certificate will include SANs for:
 - `*.redis-cluster.default.svc.<clusterDomain>.local`
 - `redis-cluster.default.svc.<clusterDomain>.local`
+
+### Certificate rotation
+
+Redis reads its certificate only at startup. With `tls.reload.enabled` (the default), each pod checks the mounted Secret every `tls.reload.intervalSeconds` and, when the files change, reloads them in place with `CONFIG SET tls-cert-file ... tls-key-file ... tls-ca-cert-file ...`, without a restart. This covers `tls.existingSecret` rotated by hand or by an external tool, and cert-manager renewals. Kubelet takes up to about a minute to update the mounted files, so a renewed certificate is served within about 90 s of the Secret change. Existing connections keep their session; new connections get the new certificate. The pod logs `TLS certificate files changed; reloaded.` on success, or the Redis error (for example a key that does not match the certificate) and keeps serving the old certificate.
+
+To check which certificate a pod serves:
+
+```bash
+kubectl exec redis-cluster-0 -c redis -- sh -c \
+  'echo | openssl s_client -connect 127.0.0.1:6379 2>/dev/null | openssl x509 -noout -serial -enddate'
+```
+
+Renew well before expiry (cert-manager does so at two thirds of the lifetime by default). If you disable the reload, a new certificate is served only after a restart. Restart one pod at a time, for example with `kubectl rollout restart statefulset/redis-cluster`, which waits for each pod to be ready before moving on. A tool such as [Reloader](https://github.com/stakater/Reloader) can trigger that on Secret changes.
 
 ### Full TLS (cluster bus)
 
@@ -501,12 +518,28 @@ helm install redis-cluster helm/redis-cluster/ \
   --set auth.password=your-secret-password
 ```
 
-When enabled, the chart automatically injects the password into:
-- `redis.conf` (`requirepass` and `masterauth`)
-- Liveness/readiness probes
-- Bootstrap script (initContainer and Job)
-- Start script (peer rejoin after restarts)
-- Helm test pod
+The chart stores `auth.password` in a Secret named `<release>-redis-cluster-auth`. To manage the Secret yourself, create it and point the chart at it instead:
+
+```bash
+kubectl create secret generic redis-password --from-literal=password=your-secret-password
+helm install redis-cluster helm/redis-cluster/ \
+  --set auth.enabled=true \
+  --set auth.existingSecret=redis-password \
+  --set auth.existingSecretPasswordKey=password
+```
+
+The password stays out of ConfigMaps, pod specs, command lines and Kubernetes events:
+- Pods get it through `secretKeyRef` env vars (`REDIS_PASSWORD`, `REDISCLI_AUTH`).
+- The start and bootstrap scripts append `requirepass` and `masterauth` to the node's own copy of `redis.conf` (`/data/redis.conf`, mode 600) at startup.
+- Probes, scripts and the Helm test pod authenticate through `REDISCLI_AUTH` instead of `redis-cli -a`.
+
+Because `REDISCLI_AUTH` is set in the container, you can run commands without passing the password:
+
+```bash
+kubectl exec redis-cluster-0 -c redis -- redis-cli -s /tmp/redis.sock cluster info
+```
+
+Pods read the password only at startup. Changing it in the Secret does not change it in running pods, and a rolling restart alone would leave nodes with different passwords. To rotate it, `CONFIG SET requirepass` and `masterauth` on every node first, then update the Secret.
 
 ### ServiceAccount Token Automount
 
@@ -586,6 +619,7 @@ helm/redis-cluster/
     ├── NOTES.txt
     ├── pdb.yaml
     ├── scripts-configmap.yaml
+    ├── secret.yaml
     ├── service.yaml
     ├── serviceaccount.yaml
     ├── statefulset.yaml

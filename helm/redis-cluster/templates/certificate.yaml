@@ -7,7 +7,7 @@ metadata:
   labels:
     {{- include "redis-cluster.labels" . | nindent 4 }}
 spec:
-  secretName: {{ default (printf "%s-tls" (include "redis-cluster.fullname" .)) .Values.tls.existingSecret }}
+  secretName: {{ include "redis-cluster.tlsSecretName" . }}
   dnsNames:
     - "*.{{ include "redis-cluster.fullname" . }}.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }}.local"
     - "{{ include "redis-cluster.fullname" . }}.{{ .Release.Namespace }}.svc.{{ .Values.clusterDomain }}.local"
